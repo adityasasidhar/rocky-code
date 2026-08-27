@@ -1,0 +1,9 @@
+# Registers the Solid JSX transform for .tsx files (Bun's default transform
+# compiles JSX React-style, which silently breaks Solid reactivity).
+preload = ["@opentui/solid/preload"]
+
+# Keep test discovery inside our own tree: opencode/ is a vendored reference
+# checkout whose test suite must not run (or fail) as ours.
+[test]
+root = "test"
+preload = ["@opentui/solid/preload"]

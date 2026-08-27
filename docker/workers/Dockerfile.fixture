@@ -1,0 +1,5 @@
+ARG ROCKY_WORKER_BASE=rocky-worker-base:1
+FROM ${ROCKY_WORKER_BASE}
+
+# Credential-free worker used only by the broker's container integration test.
+USER worker

@@ -1,0 +1,4 @@
+**
+!docker/
+!docker/workers/
+!docker/workers/Dockerfile.*

@@ -1,0 +1,8 @@
+ARG ROCKY_WORKER_BASE=rocky-worker-base:1
+FROM ${ROCKY_WORKER_BASE}
+
+USER root
+ARG CODEX_VERSION
+RUN test -n "${CODEX_VERSION}" \
+    && bun add --global "@openai/codex@${CODEX_VERSION}"
+USER worker

@@ -1,0 +1,245 @@
+diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
+index e5e5874f758a2e8c622ca8e9301f20c60c245546..80ef70c86a8ebdf132bb2e2295f65c14bad9571b 100644
+--- a/chunk-bun-tkm837n2.js
++++ b/chunk-bun-tkm837n2.js
+@@ -8225,12 +8225,11 @@ Captured external output:
+       this.emit("external_output" /* EXTERNAL_OUTPUT */, commit);
+     }
+   }
+-  createStdoutSnapshotCommit(line, trailingNewline) {
++  createStdoutSnapshotCommit(spans, visibleColumns, trailingNewline) {
+     const snapshotContext = new ScrollbackSnapshotRenderContext(this.width, 1, this.widthMethod);
+     const maxWidth = Math.max(1, this.width);
+-    const lineCells = [...line];
+-    const rowColumns = Math.min(lineCells.length, maxWidth);
+-    const renderedLine = lineCells.slice(0, maxWidth).join("");
++    const rowColumns = Math.min(visibleColumns, maxWidth);
++    const content = spans.length > 0 ? new StyledText(spans) : "";
+     const snapshotRoot = new RootRenderable(snapshotContext);
+     const snapshotRenderable = new TextRenderable(snapshotContext, {
+       id: "captured-stdout-snapshot",
+@@ -8239,7 +8238,7 @@ Captured external output:
+       top: 0,
+       width: Math.max(1, rowColumns),
+       height: 1,
+-      content: renderedLine
++      content
+     });
+     const snapshotBuffer = OptimizedBuffer.create(Math.max(1, rowColumns), 1, this.widthMethod, {
+       id: "captured-stdout-snapshot"
+@@ -8260,24 +8259,165 @@ Captured external output:
+       snapshotRoot.destroyRecursively();
+     }
+   }
+-  splitStdoutRows(text) {
++  captureSgrDefaults() {
++    return { bold: false, dim: false, italic: false, underline: false, blink: false, inverse: false, hidden: false, strikethrough: false, fg: undefined, bg: undefined };
++  }
++  captureAnsi16(n) {
++    const table = ["#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5", "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff"];
++    return table[n] ?? "#ffffff";
++  }
++  captureXterm256(n) {
++    const hex = (r, g, b) => "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
++    if (n < 16) return this.captureAnsi16(n);
++    if (n < 232) {
++      const levels = [0, 95, 135, 175, 215, 255];
++      const k = n - 16;
++      return hex(levels[Math.floor(k / 36)], levels[Math.floor(k % 36 / 6)], levels[k % 6]);
++    }
++    const g = 8 + 10 * (n - 232);
++    return hex(g, g, g);
++  }
++  captureSgrApply(style, paramStr) {
++    const params = paramStr.length === 0 ? [0] : paramStr.replaceAll(":", ";").split(";").map((p) => p.length === 0 ? 0 : parseInt(p, 10));
++    const names = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
++    const bright = (i) => "bright" + names[i].charAt(0).toUpperCase() + names[i].slice(1);
++    for (let k = 0; k < params.length; k++) {
++      const p = params[k];
++      if (Number.isNaN(p)) continue;
++      if (p === 0) Object.assign(style, this.captureSgrDefaults());
++      else if (p === 1) style.bold = true;
++      else if (p === 2) style.dim = true;
++      else if (p === 3) style.italic = true;
++      else if (p === 4) style.underline = true;
++      else if (p === 5) style.blink = true;
++      else if (p === 7) style.inverse = true;
++      else if (p === 8) style.hidden = true;
++      else if (p === 9) style.strikethrough = true;
++      else if (p === 21 || p === 22) { style.bold = false; style.dim = false; }
++      else if (p === 23) style.italic = false;
++      else if (p === 24) style.underline = false;
++      else if (p === 25) style.blink = false;
++      else if (p === 27) style.inverse = false;
++      else if (p === 28) style.hidden = false;
++      else if (p === 29) style.strikethrough = false;
++      else if (p >= 30 && p <= 37) style.fg = parseColor(names[p - 30]);
++      else if (p === 39) style.fg = undefined;
++      else if (p >= 40 && p <= 47) style.bg = parseColor(names[p - 40]);
++      else if (p === 49) style.bg = undefined;
++      else if (p >= 90 && p <= 97) style.fg = parseColor(bright(p - 90));
++      else if (p >= 100 && p <= 107) style.bg = parseColor(bright(p - 100));
++      else if (p === 38 || p === 48) {
++        const target = p === 38 ? "fg" : "bg";
++        const mode = params[k + 1];
++        if (mode === 2 && k + 4 < params.length) {
++          const hex = "#" + [params[k + 2], params[k + 3], params[k + 4]].map((v) => Math.min(Math.max(v | 0, 0), 255).toString(16).padStart(2, "0")).join("");
++          style[target] = parseColor(hex);
++          k += 4;
++        } else if (mode === 5 && k + 2 < params.length) {
++          style[target] = parseColor(this.captureXterm256(Math.min(Math.max(params[k + 2] | 0, 0), 255)));
++          k += 2;
++        } else {
++          break;
++        }
++      }
++    }
++  }
++  captureFindEscapeEnd(input, start) {
++    const n = input.length;
++    if (start + 1 >= n) return -1;
++    const kind = input[start + 1];
++    if (kind === "[") {
++      let j = start + 2;
++      while (j < n) {
++        const code = input.charCodeAt(j);
++        if (code >= 64 && code <= 126) return j + 1;
++        if (code < 32 || code > 63) return j;
++        j++;
++      }
++      return -1;
++    }
++    if (kind === "]" || kind === "P" || kind === "X" || kind === "^" || kind === "_") {
++      let j = start + 2;
++      while (j < n) {
++        if (kind === "]" && input[j] === "\x07") return j + 1;
++        if (input[j] === "\x1b") {
++          if (j + 1 >= n) return -1;
++          if (input[j + 1] === "\\") return j + 2;
++        }
++        j++;
++      }
++      return -1;
++    }
++    if (kind === "(" || kind === ")" || kind === "#") {
++      return start + 3 <= n ? start + 3 : -1;
++    }
++    return start + 2;
++  }
++  captureStyledSpan(style, text) {
++    return { __isChunk: true, text, fg: style.fg, bg: style.bg, attributes: createTextAttributes(style) };
++  }
++  captureTokenizeRows(text) {
++    const state = this.captureAnsiState ??= { style: this.captureSgrDefaults(), tail: "" };
++    const input = state.tail + text;
++    state.tail = "";
+     const rows = [];
++    let spans = [];
+     let current = "";
+-    for (const char of text) {
+-      if (char === "\r") {
++    let visible = 0;
++    const flushSpan = () => {
++      if (current.length > 0) {
++        spans.push(this.captureStyledSpan(state.style, current));
+         current = "";
++      }
++    };
++    const endRow = (trailingNewline) => {
++      flushSpan();
++      rows.push({ spans, visible, trailingNewline });
++      spans = [];
++      visible = 0;
++    };
++    let i = 0;
++    const n = input.length;
++    while (i < n) {
++      const ch = input[i];
++      if (ch === "\x1b") {
++        const seqEnd = this.captureFindEscapeEnd(input, i);
++        if (seqEnd === -1) {
++          if (n - i <= 64) {
++            state.tail = input.slice(i);
++          }
++          break;
++        }
++        const seq = input.slice(i, seqEnd);
++        if (seq.length >= 3 && seq[1] === "[" && seq[seq.length - 1] === "m") {
++          flushSpan();
++          this.captureSgrApply(state.style, seq.slice(2, -1));
++        }
++        i = seqEnd;
+         continue;
+       }
+-      if (char === `
++      if (ch === `
+ `) {
+-        rows.push({ line: current, trailingNewline: true });
++        endRow(true);
++        i++;
++        continue;
++      }
++      if (ch === "\r") {
++        flushSpan();
++        spans = [];
+         current = "";
++        visible = 0;
++        i++;
+         continue;
+       }
+-      current += char;
++      const cp = input.codePointAt(i);
++      const glyph = String.fromCodePoint(cp);
++      current += glyph;
++      visible += 1;
++      i += glyph.length;
+     }
+-    if (current.length > 0) {
+-      rows.push({ line: current, trailingNewline: false });
++    if (spans.length > 0 || current.length > 0) {
++      endRow(false);
+     }
+     return rows;
+   }
+@@ -8287,18 +8427,30 @@ Captured external output:
+     }
+     const commits = [];
+     const chunkWidth = Math.max(1, this.width);
+-    for (const row of this.splitStdoutRows(text)) {
+-      const rowCells = [...row.line];
+-      if (rowCells.length === 0) {
+-        commits.push(this.createStdoutSnapshotCommit("", row.trailingNewline));
+-        continue;
++    for (const row of this.captureTokenizeRows(text)) {
++      const chunks = [];
++      let cur = { spans: [], visible: 0 };
++      for (const span of row.spans) {
++        let cells = [...span.text];
++        while (cells.length > 0) {
++          const space = chunkWidth - cur.visible;
++          if (space === 0) {
++            chunks.push(cur);
++            cur = { spans: [], visible: 0 };
++            continue;
++          }
++          const take = cells.slice(0, space);
++          cur.spans.push({ __isChunk: true, text: take.join(""), fg: span.fg, bg: span.bg, attributes: span.attributes });
++          cur.visible += take.length;
++          cells = cells.slice(space);
++        }
++      }
++      if (cur.visible > 0 || chunks.length === 0) {
++        chunks.push(cur);
+       }
+-      let offset = 0;
+-      while (offset < rowCells.length) {
+-        const chunk = rowCells.slice(offset, offset + chunkWidth).join("");
+-        offset += chunkWidth;
+-        const isLastChunk = offset >= rowCells.length;
+-        commits.push(this.createStdoutSnapshotCommit(chunk, isLastChunk ? row.trailingNewline : false));
++      for (const [index, chunk] of chunks.entries()) {
++        const isLastChunk = index === chunks.length - 1;
++        commits.push(this.createStdoutSnapshotCommit(chunk.spans, chunk.visible, isLastChunk ? row.trailingNewline : false));
+       }
+     }
+     return commits;

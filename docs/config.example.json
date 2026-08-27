@@ -1,0 +1,52 @@
+{
+  "backend": "trueforge",
+  "trueforge": {
+    "baseUrl": "http://127.0.0.1:8790",
+    "tokenEnv": "TRUEFORGE_TOKEN",
+    "model": "anthropic/claude-sonnet-4-5",
+    "brokerMcpName": "rocky-worker-broker",
+    "sandbox": true,
+    "dynamicSubagents": true
+  },
+  "broker": {
+    "host": "127.0.0.1",
+    "port": 8791,
+    "maxSnapshotBytes": 52428800,
+    "secretPatterns": ["**/*.secret.json", "private/**"],
+    "maxRecoveryAttempts": 3,
+    "workers": {
+      "codex": {
+        "enabled": true,
+        "kind": "codex",
+        "image": "rocky-worker-codex:1.2.3",
+        "model": "gpt-5.2-codex",
+        "timeoutMs": 900000,
+        "capabilities": ["typescript", "refactor", "debug"],
+        "costTier": 2,
+        "concurrency": 1,
+        "credentialEnv": ["OPENAI_API_KEY"]
+      },
+      "claude": {
+        "enabled": true,
+        "kind": "claude",
+        "image": "rocky-worker-claude:2.1.0",
+        "timeoutMs": 900000,
+        "capabilities": ["architecture", "typescript", "review"],
+        "costTier": 3,
+        "concurrency": 1,
+        "credentialEnv": ["ANTHROPIC_API_KEY"]
+      },
+      "opencode": {
+        "enabled": false,
+        "kind": "opencode",
+        "image": "rocky-worker-opencode:1.0.0",
+        "timeoutMs": 900000,
+        "capabilities": ["typescript", "local-model"],
+        "costTier": 1,
+        "concurrency": 1,
+        "credentialEnv": []
+      }
+    }
+  },
+  "permissionMode": "ask"
+}

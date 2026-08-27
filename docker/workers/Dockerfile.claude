@@ -1,0 +1,8 @@
+ARG ROCKY_WORKER_BASE=rocky-worker-base:1
+FROM ${ROCKY_WORKER_BASE}
+
+USER root
+ARG CLAUDE_CODE_VERSION
+RUN test -n "${CLAUDE_CODE_VERSION}" \
+    && bun add --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+USER worker

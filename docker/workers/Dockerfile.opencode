@@ -1,0 +1,8 @@
+ARG ROCKY_WORKER_BASE=rocky-worker-base:1
+FROM ${ROCKY_WORKER_BASE}
+
+USER root
+ARG OPENCODE_VERSION
+RUN test -n "${OPENCODE_VERSION}" \
+    && bun add --global "opencode-ai@${OPENCODE_VERSION}"
+USER worker
