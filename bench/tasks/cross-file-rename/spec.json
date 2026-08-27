@@ -1,0 +1,4 @@
+{
+  "prompt": "Rename getUserName to formatUserName throughout the TypeScript project while preserving the greeting behavior and removing the old exported name.",
+  "verify": "bun run rename_check.ts"
+}

@@ -92,8 +92,15 @@ Rocky source self-repair is diagnostic-only until ordinary recovery fails. Its p
 ```bash
 bunx tsc --noEmit
 bun test
+
+# Optional live-model benchmark (three trials per task by default)
+ROCKY_BENCH_TRIALS=3 bun bench/run.ts
 ```
 
-The suite covers SDK event mapping, approvals and resume, reconnect cursors, worker JSON parsers and malformed streams, recovery classification/limits, snapshot exclusions and size limits, MCP authentication, path traversal, symlink escapes, stale hashes, conflicts, checkpoints, undo conflicts, and the original agent/TUI/provider behavior.
+The suite covers SDK event mapping, approvals and resume, reconnect cursors, worker JSON parsers and malformed streams, recovery classification/limits, snapshot exclusions and size limits, MCP authentication, path traversal, symlink escapes, stale hashes, conflicts, checkpoints, undo conflicts, and the original agent/TUI/provider behavior. The benchmark runs the real loop and tools in disposable repositories, then overlays hidden acceptance checks only after the agent stops; model claims never decide the score.
 
 The recording outline is in [docs/DEMO.md](docs/DEMO.md).
+
+## License
+
+Rocky is available under the [MIT License](LICENSE).

@@ -3,6 +3,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { loadTask, runTrial, TaskSpecSchema } from "../bench/harness.ts";
 import { median, renderTable, summarize } from "../bench/report.ts";
+import { parseTrialCount } from "../bench/run.ts";
 import { defaultConfig } from "../src/config/schema.ts";
 import { MockProvider, text, toolUse } from "./mock_provider.ts";
 
@@ -29,6 +30,15 @@ describe("bench tasks", () => {
 
   test("a task without a prompt is rejected at the boundary", () => {
     expect(() => TaskSpecSchema.parse({ verify: "true" })).toThrow();
+  });
+});
+
+describe("bench runner", () => {
+  test("trial count defaults to three and rejects invalid values", () => {
+    expect(parseTrialCount(undefined)).toBe(3);
+    expect(parseTrialCount("5")).toBe(5);
+    expect(() => parseTrialCount("0")).toThrow("positive integer");
+    expect(() => parseTrialCount("many")).toThrow("positive integer");
   });
 });
 
