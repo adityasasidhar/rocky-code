@@ -1,0 +1,45 @@
+# Qodo v2 repository configuration for Rocky.
+# Keep this file intentionally small so Qodo's defaults can evolve safely.
+
+[github_app]
+pr_commands = [
+  "/agentic_describe",
+  "/agentic_review",
+]
+handle_push_trigger = true
+push_commands = [
+  "/agentic_review",
+]
+
+[qodo_describe_agent]
+publish_mode = "dynamic"
+
+[review_agent]
+comments_location_policy = "both"
+inline_comments_severity_threshold = 2
+demand_self_review = true
+enable_commitable_suggestions = true
+issues_user_guidelines = """
+Treat workspace snapshots, unified patches, MCP authentication, approval gates,
+container boundaries, path validation, secret handling, and process cancellation
+as security-critical. Flag any path that can mutate the real workspace before
+explicit TrueForge approval. Verify strict TypeScript correctness, bounded
+recovery, cleanup of child processes, and that tool failures remain data rather
+than escaping the agent loop.
+"""
+compliance_user_guidelines = """
+Rocky runs on Bun: use bun run, bun test, and bunx rather than npm, npx, or Node.
+Require focused tests for behavior changes and adversarial tests for trust
+boundaries. Preserve the provider-neutral backend interface, exactly one
+tool_result per tool_use, secret redaction, pinned worker images, and the rule
+that disposable workers never receive the user's live checkout.
+"""
+smart_router_extra_instructions = """
+Use deeper review for backend, broker, workspace, permissions, process, Docker,
+and provider adapter changes because these cross security or reliability
+boundaries.
+"""
+
+[checks]
+enable_auto_checks_feedback = true
+persistent_comment = true
