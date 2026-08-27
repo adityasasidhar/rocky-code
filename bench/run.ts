@@ -9,16 +9,41 @@ const PROJECT_DIR = join(import.meta.dir, "..");
 const TASKS_DIR = join(import.meta.dir, "tasks");
 
 export function parseTrialCount(raw: string | undefined): number {
-  if (raw === undefined) return 3;
+  return parsePositiveInteger(raw, "ROCKY_BENCH_TRIALS", 3);
+}
+
+export function parsePositiveInteger(
+  raw: string | undefined,
+  name: string,
+  fallback: number,
+): number {
+  if (raw === undefined) return fallback;
   const count = Number(raw);
   if (!Number.isInteger(count) || count <= 0) {
-    throw new Error("ROCKY_BENCH_TRIALS must be a positive integer");
+    throw new Error(`${name} must be a positive integer`);
   }
   return count;
 }
 
 export async function main(): Promise<void> {
   const trials = parseTrialCount(process.env.ROCKY_BENCH_TRIALS);
+  const trialOptions = {
+    trialTimeoutMs: parsePositiveInteger(
+      process.env.ROCKY_BENCH_TIMEOUT_MS,
+      "ROCKY_BENCH_TIMEOUT_MS",
+      10 * 60_000,
+    ),
+    verifyTimeoutMs: parsePositiveInteger(
+      process.env.ROCKY_BENCH_VERIFY_TIMEOUT_MS,
+      "ROCKY_BENCH_VERIFY_TIMEOUT_MS",
+      2 * 60_000,
+    ),
+    verifyOutputBytes: parsePositiveInteger(
+      process.env.ROCKY_BENCH_VERIFY_OUTPUT_BYTES,
+      "ROCKY_BENCH_VERIFY_OUTPUT_BYTES",
+      128 * 1024,
+    ),
+  };
   const { config } = loadConfig(PROJECT_DIR, { backend: "local" });
   const provider = createProvider(config.provider);
   await provider.prepare?.(config.model, new AbortController().signal);
@@ -32,7 +57,7 @@ export async function main(): Promise<void> {
   for (const task of tasks) {
     for (let trial = 1; trial <= trials; trial++) {
       process.stderr.write(`[bench] ${task.name} ${trial}/${trials}\n`);
-      results.push(await runTrial(task, provider, config));
+      results.push(await runTrial(task, provider, config, undefined, trialOptions));
     }
   }
 
