@@ -1,6 +1,11 @@
 {
   "name": "rocky",
   "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adityasasidhar/rocky-code.git"
+  },
   "module": "src/cli.ts",
   "type": "module",
   "private": true,

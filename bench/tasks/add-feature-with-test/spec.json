@@ -1,0 +1,4 @@
+{
+  "prompt": "Add an exported clamp(value, min, max) function to src/math.ts and add focused Bun tests. It must reject an inverted min/max range.",
+  "verify": "bun test test/math.test.ts && bun run feature_check.ts"
+}
