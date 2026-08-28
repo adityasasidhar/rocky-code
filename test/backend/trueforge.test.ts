@@ -68,6 +68,20 @@ describe("TrueForge backend", () => {
       "root answer",
       "cannot perform that action",
     ]);
+    const terminal = fixture.find(({ data }) => data.type === "turn.done");
+    expect(terminal && backend.mapEvent(terminal.data, true)).toEqual([
+      {
+        type: "turn_end",
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 12,
+          outputTokens: 4,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+        },
+        costUsd: 0.001,
+      },
+    ]);
   });
 
   test("maps streaming, subagent, sandbox, and MCP events into UI events", () => {
@@ -244,19 +258,25 @@ describe("TrueForge backend", () => {
       sessions: {
         create: async () => ({ data: { id: "session-2" } }),
         createTurnStream: async () => {
-          async function* broken(): AsyncGenerator<TrueForgeApi.TurnStreamingEvent> {
-            yield {
-              type: "turn.created",
-              id: "created",
-              createdAt: new Date().toISOString(),
-              threadId: null,
-              turnId: "turn-reconnect",
-              previousTurnId: null,
-              state: { status: "running" },
-            };
-            throw new Error("connection reset");
-          }
-          return broken();
+          const created: TrueForgeApi.TurnCreatedEvent = {
+            type: "turn.created",
+            id: "created",
+            createdAt: new Date().toISOString(),
+            threadId: null,
+            turnId: "turn-reconnect",
+            previousTurnId: null,
+            state: { status: "running" },
+          };
+          return {
+            async *[Symbol.asyncIterator](): AsyncGenerator<TrueForgeApi.TurnStreamingEvent> {
+              yield created;
+              throw new Error("connection reset");
+            },
+            async *withMetadata(): AsyncGenerator<{ data: TrueForgeApi.TurnStreamingEvent; id?: string }> {
+              yield { data: created, id: "41" };
+              throw new Error("connection reset");
+            },
+          };
         },
         subscribeToTurn: async (_session: string, _turn: string, request: { afterSequenceNumber?: number | null }) => {
           cursor = request.afterSequenceNumber;
@@ -271,7 +291,7 @@ describe("TrueForge backend", () => {
     };
     const backend = new TrueForgeBackend(dir, config(), client as unknown as TrueForge);
     const events = await collect(backend.turn("continue", { signal: new AbortController().signal }));
-    expect(cursor).toBe(1);
+    expect(cursor).toBe(41);
     expect(events.some((event) => event.type === "infrastructure" && event.status === "connecting")).toBe(true);
     expect(events.some((event) => event.type === "text_delta" && event.text === "back")).toBe(true);
   });
@@ -415,7 +435,7 @@ describe("TrueForge backend", () => {
     expect(events.some((event) => event.type === "infrastructure" && event.detail === "persisted turn recovered")).toBe(true);
   });
 
-  test("replays a turn that completed while Rocky was offline before starting the next prompt", async () => {
+  test("renders a turn completed offline exactly once before starting the next prompt", async () => {
     const stateDir = join(dir, ".rocky", "trueforge");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(
@@ -455,6 +475,13 @@ describe("TrueForge backend", () => {
             yield completed;
           },
         }),
+        listEvents: async () => ({
+          data: [{ turnId: "turn-completed", event: completed }],
+          async *[Symbol.asyncIterator](): AsyncGenerator<TrueForgeApi.SessionEventItem> {
+            yield { turnId: "turn-completed", event: completed };
+            yield { turnId: "turn-completed", event: completedMessage };
+          },
+        }),
         subscribeToTurn: async () => {
           subscribed = true;
           throw new Error("completed turn stream has expired");
@@ -484,12 +511,178 @@ describe("TrueForge backend", () => {
     };
 
     const backend = new TrueForgeBackend(dir, config(), client as unknown as TrueForge);
+    const history = await collect(backend.replay());
     const events = await collect(backend.turn("next", { signal: new AbortController().signal }));
 
     expect(subscribed).toBe(false);
     expect(requests[0]?.[0]).toEqual({ type: "user.message", content: "next" });
-    expect(events.filter((event) => event.type === "text_delta").map((event) => event.text)).toEqual([
+    expect([...history, ...events].filter((event) => event.type === "text_delta").map((event) => event.text)).toEqual([
       "completed while offline",
+      "current",
+    ]);
+  });
+
+  test("pauses a recovered turn when TrueForge still requires external actions", async () => {
+    const stateDir = join(dir, ".rocky", "trueforge");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "session.json"),
+      JSON.stringify({
+        sessionId: "session-actions",
+        activeTurnId: "turn-actions",
+        lastSequenceNumber: 4,
+        snapshotAttached: true,
+      }),
+    );
+    const auth: TrueForgeApi.McpAuthRequiredEvent = {
+      type: "mcp.auth_required",
+      id: "auth-required",
+      createdAt: new Date().toISOString(),
+      threadId: null,
+      mcpServers: [{ id: "mcp-1", name: "github", authUrl: "https://auth.example/continue" }],
+    };
+    const response: TrueForgeApi.ToolResponseRequiredEvent = {
+      type: "tool.response_required",
+      id: "response-required",
+      createdAt: new Date().toISOString(),
+      threadId: "main",
+      toolCalls: [{ id: "client-tool-1", sourceEventId: "message-1" }],
+    };
+    const terminal: TrueForgeApi.TurnDoneEvent = {
+      ...done("actions-done"),
+      state: {
+        status: "done",
+        completedAt: new Date().toISOString(),
+        output: null,
+        requiredActions: [auth, response],
+      },
+    };
+    let startedNextPrompt = false;
+    const client = {
+      sessions: {
+        getTurn: async () => ({
+          data: {
+            id: "turn-actions",
+            sessionId: "session-actions",
+            previousTurnId: null,
+            createdAt: new Date().toISOString(),
+            state: terminal.state,
+          },
+        }),
+        listTurnEvents: async () => ({
+          async *[Symbol.asyncIterator](): AsyncGenerator<TrueForgeApi.SessionEvent> {
+            yield auth;
+            yield response;
+            yield terminal;
+          },
+        }),
+        createTurnStream: async () => {
+          startedNextPrompt = true;
+          async function* current(): AsyncGenerator<TrueForgeApi.TurnStreamingEvent> {
+            yield done("unexpected-current");
+          }
+          return current();
+        },
+        cancel: async () => ({}),
+      },
+    };
+
+    const backend = new TrueForgeBackend(dir, config(), client as unknown as TrueForge);
+    const events = await collect(backend.turn("next", { signal: new AbortController().signal }));
+
+    expect(startedNextPrompt).toBe(false);
+    expect(events.filter((event) => event.type === "notice").map((event) => event.text)).toEqual([
+      "MCP authorization required for github: https://auth.example/continue. Complete authorization, then retry your prompt.",
+      "TrueForge is waiting for 1 external tool response. The pending turn was preserved.",
+    ]);
+    expect(backend.status()).toMatchObject({ activeTurnId: "turn-actions", phase: "awaiting_approval" });
+  });
+
+  test("resumes recovered MCP authorization with empty input before the queued prompt", async () => {
+    const stateDir = join(dir, ".rocky", "trueforge");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "session.json"),
+      JSON.stringify({
+        sessionId: "session-auth",
+        activeTurnId: "turn-auth",
+        lastSequenceNumber: 3,
+        snapshotAttached: true,
+      }),
+    );
+    const auth: TrueForgeApi.McpAuthRequiredEvent = {
+      type: "mcp.auth_required",
+      id: "auth-only",
+      createdAt: new Date().toISOString(),
+      threadId: null,
+      mcpServers: [{ id: "mcp-1", name: "github", authUrl: "https://auth.example/continue" }],
+    };
+    const paused: TrueForgeApi.TurnDoneEvent = {
+      ...done("auth-paused"),
+      state: {
+        status: "done",
+        completedAt: new Date().toISOString(),
+        output: null,
+        requiredActions: [auth],
+      },
+    };
+    const requests: Array<{ input?: TrueForgeApi.TurnInputItem[] }> = [];
+    const client = {
+      sessions: {
+        getTurn: async () => ({
+          data: {
+            id: "turn-auth",
+            sessionId: "session-auth",
+            previousTurnId: null,
+            createdAt: new Date().toISOString(),
+            state: paused.state,
+          },
+        }),
+        listTurnEvents: async () => ({
+          async *[Symbol.asyncIterator](): AsyncGenerator<TrueForgeApi.SessionEvent> {
+            yield auth;
+            yield paused;
+          },
+        }),
+        createTurnStream: async (
+          _session: string,
+          request: { input?: TrueForgeApi.TurnInputItem[] },
+        ) => {
+          requests.push(request);
+          const call = requests.length;
+          async function* stream(): AsyncGenerator<TrueForgeApi.TurnStreamingEvent> {
+            yield {
+              type: "turn.created",
+              id: `created-${call}`,
+              createdAt: new Date().toISOString(),
+              threadId: null,
+              turnId: `turn-${call}`,
+              previousTurnId: call === 1 ? "turn-auth" : "turn-1",
+              state: { status: "running" },
+            };
+            yield {
+              type: "model.message.delta",
+              id: `delta-${call}`,
+              threadId: "main",
+              content: call === 1 ? "authorized" : "current",
+            };
+            yield done(`done-${call}`);
+          }
+          return stream();
+        },
+        cancel: async () => ({}),
+      },
+    };
+
+    const backend = new TrueForgeBackend(dir, config(), client as unknown as TrueForge);
+    const events = await collect(backend.turn("next", { signal: new AbortController().signal }));
+
+    expect(requests).toEqual([
+      {},
+      { input: [{ type: "user.message", content: "next" }] },
+    ]);
+    expect(events.filter((event) => event.type === "text_delta").map((event) => event.text)).toEqual([
+      "authorized",
       "current",
     ]);
   });
@@ -540,7 +733,17 @@ describe("TrueForge backend", () => {
     };
     const newerDone: TrueForgeApi.SessionEventItem = {
       turnId: "turn-newer",
-      event: done("newer-done"),
+      event: done("newer-done", { totalInputTokens: 8, totalOutputTokens: 2, totalCostInUsd: 0.002 }),
+    };
+    const historicalSandbox: TrueForgeApi.SessionEventItem = {
+      turnId: "turn-older",
+      event: {
+        type: "sandbox.created",
+        id: "historical-sandbox",
+        createdAt: new Date().toISOString(),
+        threadId: null,
+        sandboxId: "sandbox-no-longer-live",
+      },
     };
     const client = {
       sessions: {
@@ -550,6 +753,7 @@ describe("TrueForge backend", () => {
             yield newerDone;
             yield newer;
             yield newerCreated;
+            yield historicalSandbox;
             yield older;
           },
         }),
@@ -566,5 +770,17 @@ describe("TrueForge backend", () => {
     expect(backend.status().connection).toBe("ready");
     expect(backend.status().activeTurnId).toBeUndefined();
     expect(backend.status().phase).toBe("idle");
+    expect(backend.status().sandbox).toBe("unknown");
+    expect(events).toContainEqual({
+      type: "turn_end",
+      stopReason: "end_turn",
+      usage: {
+        inputTokens: 8,
+        outputTokens: 2,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+      costUsd: 0.002,
+    });
   });
 });

@@ -24,6 +24,16 @@ interface PersistedState {
 interface StreamOutcome {
   terminal?: TrueForgeApi.TurnDoneEvent;
   approvals: TrueForgeApi.UserToolApprovalEvent[];
+  externalActions: Array<
+    TrueForgeApi.McpAuthRequiredEvent | TrueForgeApi.ToolResponseRequiredEvent
+  >;
+}
+
+interface MetadataStream extends AsyncIterable<TrueForgeApi.TurnStreamingEvent> {
+  withMetadata(): AsyncIterable<{
+    data: TrueForgeApi.TurnStreamingEvent;
+    id?: string;
+  }>;
 }
 
 const ROOT_INSTRUCTIONS = `You are Rocky, an orchestration-first terminal coding agent running inside TrueForge.
@@ -68,6 +78,25 @@ function usageFromMetrics(metrics: TrueForgeApi.TurnMetrics | undefined): Usage 
 function stopReason(status: string): StopReason {
   if (status === "cancelled") return "aborted";
   return status === "error" ? "refusal" : "end_turn";
+}
+
+function turnEndEvent(
+  status: string,
+  usage: Usage,
+  costUsd?: number,
+): Extract<LoopEvent, { type: "turn_end" }> {
+  return {
+    type: "turn_end",
+    stopReason: stopReason(status),
+    usage,
+    ...(costUsd !== undefined ? { costUsd } : {}),
+  };
+}
+
+function sequenceNumber(id: string | undefined, fallback: number): number {
+  if (!id || !/^\d+$/.test(id)) return fallback;
+  const parsed = Number(id);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function summarizeArgs(args: string): string {
@@ -148,6 +177,12 @@ export class TrueForgeBackend implements AgentBackend {
 
   private saveState(): void {
     writeFileSync(this.statePath, `${JSON.stringify(this.state, null, 2)}\n`, { mode: 0o600 });
+  }
+
+  private clearActiveTurn(): void {
+    this.state.activeTurnId = undefined;
+    this.state.lastSequenceNumber = 0;
+    this.saveState();
   }
 
   private async ensureSession(): Promise<string> {
@@ -255,7 +290,7 @@ export class TrueForgeBackend implements AgentBackend {
         this.saveState();
         return [{ type: "infrastructure", component: "trueforge", status: "running", detail: `turn ${event.turnId.slice(0, 8)}` }];
       case "sandbox.created":
-        this.sandbox = "ready";
+        if (!replay) this.sandbox = "ready";
         return [{ type: "infrastructure", component: "sandbox", status: "ready", detail: event.sandboxId }];
       case "mcp.initialize":
         return [
@@ -329,12 +364,64 @@ export class TrueForgeBackend implements AgentBackend {
         ];
       }
       case "mcp.auth_required":
-        return [{ type: "notice", text: "MCP authorization is required in TrueForge before this turn can continue." }];
+        return [
+          {
+            type: "notice",
+            text: `MCP authorization required for ${event.mcpServers
+              .map((server) => `${server.name}: ${server.authUrl}`)
+              .join(", ")}. Complete authorization, then retry your prompt.`,
+          },
+        ];
       case "tool.response_required":
-        return [{ type: "notice", text: "A tool response is required before TrueForge can continue." }];
+        return [
+          {
+            type: "notice",
+            text: `TrueForge is waiting for ${event.toolCalls.length} external tool response${event.toolCalls.length === 1 ? "" : "s"}. The pending turn was preserved.`,
+          },
+        ];
       case "tool.approval_required":
-      case "turn.done":
         return [];
+      case "turn.done": {
+        if (!replay) return [];
+        const metrics = event.state.metrics;
+        const events: LoopEvent[] = [];
+        if (event.state.status === "error") {
+          events.push({ type: "notice", text: event.state.message });
+        }
+        events.push(
+          turnEndEvent(
+            event.state.status,
+            usageFromMetrics(metrics),
+            metrics?.totalCostInUsd,
+          ),
+        );
+        return events;
+      }
+    }
+  }
+
+  private async *streamEvents(
+    stream: AsyncIterable<TrueForgeApi.TurnStreamingEvent>,
+  ): AsyncGenerator<
+    { event: TrueForgeApi.TurnStreamingEvent; sequenceNumber: number },
+    void,
+    undefined
+  > {
+    const metadataStream = stream as Partial<MetadataStream>;
+    if (typeof metadataStream.withMetadata === "function") {
+      for await (const envelope of metadataStream.withMetadata()) {
+        yield {
+          event: envelope.data,
+          sequenceNumber: sequenceNumber(
+            envelope.id,
+            this.state.lastSequenceNumber + 1,
+          ),
+        };
+      }
+      return;
+    }
+    for await (const event of stream) {
+      yield { event, sequenceNumber: this.state.lastSequenceNumber + 1 };
     }
   }
 
@@ -380,12 +467,14 @@ export class TrueForgeBackend implements AgentBackend {
     let stream = initialStream;
     let terminal: TrueForgeApi.TurnDoneEvent | undefined;
     const approvals: TrueForgeApi.UserToolApprovalEvent[] = [];
+    const externalActions: StreamOutcome["externalActions"] = [];
     let reconnects = 0;
 
     for (;;) {
       try {
-        for await (const event of stream) {
-          this.state.lastSequenceNumber++;
+        for await (const item of this.streamEvents(stream)) {
+          const { event } = item;
+          this.state.lastSequenceNumber = item.sequenceNumber;
           if (event.type === "turn.created") this.state.activeTurnId = event.turnId;
           this.saveState();
           if (event.type === "tool.approval_required") {
@@ -397,13 +486,16 @@ export class TrueForgeBackend implements AgentBackend {
             };
             approvals.push(...(await this.requestApprovals(event, options.approveAction)));
           }
+          if (event.type === "mcp.auth_required" || event.type === "tool.response_required") {
+            externalActions.push(event);
+          }
           if (event.type === "turn.done") terminal = event;
           for (const mapped of this.mapEvent(event)) yield mapped;
         }
-        if (!terminal && approvals.length === 0) {
+        if (!terminal && approvals.length === 0 && externalActions.length === 0) {
           throw new Error("TrueForge stream ended before turn.done");
         }
-        return { ...(terminal ? { terminal } : {}), approvals };
+        return { ...(terminal ? { terminal } : {}), approvals, externalActions };
       } catch (error) {
         if (options.signal.aborted) throw error;
         if (!this.state.activeTurnId || reconnects >= 2) throw error;
@@ -437,6 +529,7 @@ export class TrueForgeBackend implements AgentBackend {
       let promptStarted = !this.state.activeTurnId;
       let inputs: TrueForgeApi.TurnInputItem[] = promptStarted ? [this.userInput(prompt, options.extraSystem)] : [];
       let pendingStream: AsyncIterable<TrueForgeApi.TurnStreamingEvent> | undefined;
+      let resumeMcpAuth = false;
       if (this.state.activeTurnId) {
         this.connection = "connecting";
         const activeTurnId = this.state.activeTurnId;
@@ -460,33 +553,62 @@ export class TrueForgeBackend implements AgentBackend {
             order: "asc",
           });
           for await (const event of events) {
-            for (const mapped of this.mapEvent(event, true)) yield mapped;
-          }
-          finalStatus = persistedTurn.data.state.status;
-          finalUsage = addUsage(finalUsage, usageFromMetrics(persistedTurn.data.state.metrics));
-          if (persistedTurn.data.state.metrics?.totalCostInUsd !== undefined) {
-            finalCostUsd =
-              (finalCostUsd ?? 0) + persistedTurn.data.state.metrics.totalCostInUsd;
+            // replay() owns user-visible history. This silent pass only
+            // reconstructs tool metadata needed to resolve pending actions.
+            this.mapEvent(event, true);
           }
           if (persistedTurn.data.state.status === "error") {
             yield { type: "notice", text: persistedTurn.data.state.message };
           }
           if (persistedTurn.data.state.status === "done") {
-            for (const action of persistedTurn.data.state.requiredActions) {
-              if (action.type !== "tool.approval_required") continue;
+            const externalActions = persistedTurn.data.state.requiredActions.filter(
+              (
+                action,
+              ): action is
+                | TrueForgeApi.McpAuthRequiredEvent
+                | TrueForgeApi.ToolResponseRequiredEvent =>
+                action.type === "mcp.auth_required" ||
+                action.type === "tool.response_required",
+            );
+            const responseActions = externalActions.filter(
+              (action): action is TrueForgeApi.ToolResponseRequiredEvent =>
+                action.type === "tool.response_required",
+            );
+            if (responseActions.length > 0) {
               this.phase = "awaiting_approval";
               yield {
                 type: "phase",
                 phase: "awaiting_approval",
-                detail: `${action.toolCalls.length} tool call(s)`,
+                detail: `${externalActions.length} external action(s)`,
               };
-              inputs.push(...(await this.requestApprovals(action, options.approveAction)));
+              for (const action of externalActions) {
+                for (const mapped of this.mapEvent(action, true)) yield mapped;
+              }
+              this.connection = "ready";
+              return;
+            }
+            if (externalActions.length > 0) {
+              for (const action of externalActions) {
+                for (const mapped of this.mapEvent(action, true)) yield mapped;
+              }
+              resumeMcpAuth = true;
+              this.phase = "planning";
+            }
+            if (!resumeMcpAuth) {
+              for (const action of persistedTurn.data.state.requiredActions) {
+                if (action.type !== "tool.approval_required") continue;
+                this.phase = "awaiting_approval";
+                yield {
+                  type: "phase",
+                  phase: "awaiting_approval",
+                  detail: `${action.toolCalls.length} tool call(s)`,
+                };
+                inputs.push(...(await this.requestApprovals(action, options.approveAction)));
+              }
             }
           }
-          if (inputs.length === 0) {
-            this.state.activeTurnId = undefined;
-            this.state.lastSequenceNumber = 0;
-            this.saveState();
+          if (inputs.length === 0 && !resumeMcpAuth) {
+            this.clearActiveTurn();
             yield {
               type: "infrastructure",
               component: "trueforge",
@@ -501,7 +623,7 @@ export class TrueForgeBackend implements AgentBackend {
       }
 
       let approvalRounds = 0;
-      while (pendingStream || inputs.length > 0) {
+      while (pendingStream || resumeMcpAuth || inputs.length > 0) {
         if (options.signal.aborted) throw new Error("aborted");
         let stream: AsyncIterable<TrueForgeApi.TurnStreamingEvent>;
         if (pendingStream) {
@@ -509,9 +631,11 @@ export class TrueForgeBackend implements AgentBackend {
           pendingStream = undefined;
         } else {
           this.state.lastSequenceNumber = 0;
+          const request = resumeMcpAuth ? {} : { input: inputs };
+          resumeMcpAuth = false;
           stream = await this.client.sessions.createTurnStream(
             sessionId,
-            { input: inputs },
+            request,
             { abortSignal: options.signal, timeoutInSeconds: 3_600 },
           );
           if (!this.state.snapshotAttached) {
@@ -535,6 +659,37 @@ export class TrueForgeBackend implements AgentBackend {
           }
         }
 
+        const externalActions = new Map(
+          outcome.externalActions.map((action) => [action.id, action] as const),
+        );
+        if (outcome.terminal?.state.status === "done") {
+          for (const action of outcome.terminal.state.requiredActions) {
+            if (
+              action.type === "mcp.auth_required" ||
+              action.type === "tool.response_required"
+            ) {
+              externalActions.set(action.id, action);
+            }
+          }
+        }
+        if (externalActions.size > 0) {
+          this.phase = "awaiting_approval";
+          yield {
+            type: "phase",
+            phase: "awaiting_approval",
+            detail: `${externalActions.size} external action(s)`,
+          };
+          const streamedActionIds = new Set(
+            outcome.externalActions.map((action) => action.id),
+          );
+          for (const action of externalActions.values()) {
+            if (streamedActionIds.has(action.id)) continue;
+            for (const mapped of this.mapEvent(action)) yield mapped;
+          }
+          yield turnEndEvent(finalStatus, finalUsage, finalCostUsd);
+          return;
+        }
+
         if (inputs.length > 0) {
           approvalRounds++;
           if (approvalRounds > 10) throw new Error("TrueForge approval resume limit exceeded");
@@ -544,40 +699,33 @@ export class TrueForgeBackend implements AgentBackend {
 
         if (!promptStarted) {
           if (!outcome.terminal) throw new Error("recovered TrueForge turn did not reach a terminal state");
-          this.state.activeTurnId = undefined;
-          this.state.lastSequenceNumber = 0;
-          this.saveState();
+          this.clearActiveTurn();
           yield {
             type: "infrastructure",
             component: "trueforge",
             status: "done",
             detail: "persisted turn recovered",
           };
+          yield turnEndEvent(finalStatus, finalUsage, finalCostUsd);
+          finalStatus = "done";
+          finalUsage = emptyUsage();
+          finalCostUsd = undefined;
           inputs = [this.userInput(prompt, options.extraSystem)];
           promptStarted = true;
           this.phase = "planning";
         }
       }
 
-      this.state.activeTurnId = undefined;
-      this.state.lastSequenceNumber = 0;
-      this.saveState();
+      this.clearActiveTurn();
       this.phase = "idle";
       yield { type: "phase", phase: "idle" };
-      yield {
-        type: "turn_end",
-        stopReason: stopReason(finalStatus),
-        usage: finalUsage,
-        ...(finalCostUsd !== undefined ? { costUsd: finalCostUsd } : {}),
-      };
+      yield turnEndEvent(finalStatus, finalUsage, finalCostUsd);
     } catch (error) {
       this.phase = "idle";
       if (options.signal.aborted) {
         await this.cancel().catch(() => undefined);
-        this.state.activeTurnId = undefined;
-        this.state.lastSequenceNumber = 0;
-        this.saveState();
-        yield { type: "turn_end", stopReason: "aborted", usage: finalUsage };
+        this.clearActiveTurn();
+        yield turnEndEvent("cancelled", finalUsage);
         return;
       }
       this.connection = "error";
