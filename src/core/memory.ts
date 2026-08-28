@@ -84,7 +84,7 @@ export function loadProjectMemory(projectDir: string): string | undefined {
     }
 
     const bounds = trimBounds(text);
-    if (bounds.start === bounds.end) continue;
+    if (bounds.start === bounds.end) return undefined;
 
     const prefix = `${[
       `<project-memory source="${name}">`,
