@@ -522,7 +522,7 @@ describe("TrueForge backend", () => {
     ]);
   });
 
-  test("pauses a recovered turn when TrueForge still requires external actions", async () => {
+  test("resumes mixed external and approval actions without dropping decisions", async () => {
     const stateDir = join(dir, ".rocky", "trueforge");
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(
@@ -548,16 +548,23 @@ describe("TrueForge backend", () => {
       threadId: "main",
       toolCalls: [{ id: "client-tool-1", sourceEventId: "message-1" }],
     };
+    const approval: TrueForgeApi.ToolApprovalRequiredEvent = {
+      type: "tool.approval_required",
+      id: "approval-required",
+      createdAt: new Date().toISOString(),
+      threadId: "main",
+      toolCalls: [{ id: "approval-tool-1", sourceEventId: "message-2" }],
+    };
     const terminal: TrueForgeApi.TurnDoneEvent = {
       ...done("actions-done"),
       state: {
         status: "done",
         completedAt: new Date().toISOString(),
         output: null,
-        requiredActions: [auth, response],
+        requiredActions: [auth, response, approval],
       },
     };
-    let startedNextPrompt = false;
+    const requests: Array<{ input?: TrueForgeApi.TurnInputItem[] }> = [];
     const client = {
       sessions: {
         getTurn: async () => ({
@@ -573,29 +580,57 @@ describe("TrueForge backend", () => {
           async *[Symbol.asyncIterator](): AsyncGenerator<TrueForgeApi.SessionEvent> {
             yield auth;
             yield response;
+            yield approval;
             yield terminal;
           },
         }),
-        createTurnStream: async () => {
-          startedNextPrompt = true;
-          async function* current(): AsyncGenerator<TrueForgeApi.TurnStreamingEvent> {
-            yield done("unexpected-current");
+        createTurnStream: async (
+          _session: string,
+          request: { input?: TrueForgeApi.TurnInputItem[] },
+        ) => {
+          requests.push(request);
+          async function* resumed(): AsyncGenerator<TrueForgeApi.TurnStreamingEvent> {
+            yield done(`resumed-${requests.length}`);
           }
-          return current();
+          return resumed();
         },
         cancel: async () => ({}),
       },
     };
 
     const backend = new TrueForgeBackend(dir, config(), client as unknown as TrueForge);
-    const events = await collect(backend.turn("next", { signal: new AbortController().signal }));
+    const events = await collect(
+      backend.turn("answer", {
+        signal: new AbortController().signal,
+        approveAction: async () => ({ allow: true }),
+      }),
+    );
 
-    expect(startedNextPrompt).toBe(false);
+    expect(requests).toEqual([
+      {},
+      {
+        input: [
+          {
+            type: "user.tool_response",
+            threadId: "main",
+            toolCallId: "client-tool-1",
+            content: "answer",
+          },
+          {
+            type: "user.tool_approval",
+            threadId: "main",
+            toolCallId: "approval-tool-1",
+            approval: { status: "allow" },
+          },
+        ],
+      },
+    ]);
     expect(events.filter((event) => event.type === "notice").map((event) => event.text)).toEqual([
       "MCP authorization required for github: https://auth.example/continue. Complete authorization, then retry your prompt.",
       "TrueForge is waiting for 1 external tool response. The pending turn was preserved.",
     ]);
-    expect(backend.status()).toMatchObject({ activeTurnId: "turn-actions", phase: "awaiting_approval" });
+    expect(backend.status()).toMatchObject({ phase: "idle" });
+    expect(backend.status().activeTurnId).toBeUndefined();
   });
 
   test("resumes recovered MCP authorization with empty input before the queued prompt", async () => {

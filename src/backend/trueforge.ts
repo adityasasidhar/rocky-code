@@ -136,6 +136,7 @@ export class TrueForgeBackend implements AgentBackend {
   private sandbox: BackendStatus["sandbox"] = "unknown";
   private phase: BackendStatus["phase"] = "idle";
   private snapshot: WorkspaceSnapshot | undefined;
+  private deferredActionInputs: TrueForgeApi.TurnInputItem[] = [];
   private readonly toolNames = new Map<string, { name: string; summary: string; preview?: string }>();
   private readonly threadDepths = new Map<string, number>();
   private brokerEndpoint: { url: string; token: string } | undefined;
@@ -182,6 +183,7 @@ export class TrueForgeBackend implements AgentBackend {
   private clearActiveTurn(): void {
     this.state.activeTurnId = undefined;
     this.state.lastSequenceNumber = 0;
+    this.deferredActionInputs = [];
     this.saveState();
   }
 
@@ -527,7 +529,10 @@ export class TrueForgeBackend implements AgentBackend {
       yield { type: "phase", phase: "planning", detail: "TrueForge root agent" };
 
       let promptStarted = !this.state.activeTurnId;
-      let inputs: TrueForgeApi.TurnInputItem[] = promptStarted ? [this.userInput(prompt, options.extraSystem)] : [];
+      let inputs: TrueForgeApi.TurnInputItem[] = promptStarted
+        ? [this.userInput(prompt, options.extraSystem)]
+        : this.deferredActionInputs;
+      this.deferredActionInputs = [];
       let pendingStream: AsyncIterable<TrueForgeApi.TurnStreamingEvent> | undefined;
       let resumeMcpAuth = false;
       if (this.state.activeTurnId) {
@@ -575,36 +580,53 @@ export class TrueForgeBackend implements AgentBackend {
                 action.type === "tool.response_required",
             );
             if (responseActions.length > 0) {
-              this.phase = "awaiting_approval";
-              yield {
-                type: "phase",
-                phase: "awaiting_approval",
-                detail: `${externalActions.length} external action(s)`,
-              };
-              for (const action of externalActions) {
-                for (const mapped of this.mapEvent(action, true)) yield mapped;
-              }
-              this.connection = "ready";
-              return;
+              const responses: TrueForgeApi.UserToolResponseEvent[] = responseActions.flatMap(
+                (action) =>
+                  action.toolCalls.map((call) => ({
+                    type: "user.tool_response" as const,
+                    threadId: action.threadId,
+                    toolCallId: call.id,
+                    content: prompt,
+                  })),
+              );
+              inputs = [...responses, ...inputs];
+              promptStarted = true;
             }
             if (externalActions.length > 0) {
               for (const action of externalActions) {
                 for (const mapped of this.mapEvent(action, true)) yield mapped;
               }
-              resumeMcpAuth = true;
+              resumeMcpAuth = externalActions.some(
+                (action) => action.type === "mcp.auth_required",
+              );
               this.phase = "planning";
             }
-            if (!resumeMcpAuth) {
-              for (const action of persistedTurn.data.state.requiredActions) {
-                if (action.type !== "tool.approval_required") continue;
-                this.phase = "awaiting_approval";
-                yield {
-                  type: "phase",
-                  phase: "awaiting_approval",
-                  detail: `${action.toolCalls.length} tool call(s)`,
-                };
-                inputs.push(...(await this.requestApprovals(action, options.approveAction)));
-              }
+            const decidedCallIds = new Set(
+              inputs
+                .filter(
+                  (input): input is TrueForgeApi.UserToolApprovalEvent =>
+                    input.type === "user.tool_approval",
+                )
+                .map((input) => input.toolCallId),
+            );
+            for (const action of persistedTurn.data.state.requiredActions) {
+              if (action.type !== "tool.approval_required") continue;
+              const pendingCalls = action.toolCalls.filter(
+                (call) => !decidedCallIds.has(call.id),
+              );
+              if (pendingCalls.length === 0) continue;
+              this.phase = "awaiting_approval";
+              yield {
+                type: "phase",
+                phase: "awaiting_approval",
+                detail: `${pendingCalls.length} tool call(s)`,
+              };
+              inputs.push(
+                ...(await this.requestApprovals(
+                  { ...action, toolCalls: pendingCalls },
+                  options.approveAction,
+                )),
+              );
             }
           }
           if (inputs.length === 0 && !resumeMcpAuth) {
@@ -631,19 +653,20 @@ export class TrueForgeBackend implements AgentBackend {
           pendingStream = undefined;
         } else {
           this.state.lastSequenceNumber = 0;
-          const request = resumeMcpAuth ? {} : { input: inputs };
-          resumeMcpAuth = false;
+          const resumingMcpAuth = resumeMcpAuth;
+          const request = resumingMcpAuth ? {} : { input: inputs };
           stream = await this.client.sessions.createTurnStream(
             sessionId,
             request,
             { abortSignal: options.signal, timeoutInSeconds: 3_600 },
           );
+          resumeMcpAuth = false;
+          if (!resumingMcpAuth) inputs = [];
           if (!this.state.snapshotAttached) {
             this.state.snapshotAttached = true;
             this.saveState();
           }
         }
-        inputs = [];
         const outcome = yield* this.consumeStream(sessionId, stream, options);
         inputs.push(...outcome.approvals);
 
@@ -673,6 +696,7 @@ export class TrueForgeBackend implements AgentBackend {
           }
         }
         if (externalActions.size > 0) {
+          this.deferredActionInputs = [...inputs];
           this.phase = "awaiting_approval";
           yield {
             type: "phase",
