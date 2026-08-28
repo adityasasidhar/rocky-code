@@ -48,8 +48,18 @@ describe("project memory", () => {
   test("an oversized file is truncated and says so", () => {
     writeFileSync(join(dir, "ROCKY.md"), "x".repeat(MAX_MEMORY_BYTES + 500));
     const seg = loadProjectMemory(dir)!;
-    expect(seg.length).toBeLessThan(MAX_MEMORY_BYTES + 400);
+    expect(Buffer.byteLength(seg, "utf8")).toBeLessThanOrEqual(MAX_MEMORY_BYTES);
     expect(seg).toContain("truncated");
+  });
+
+  test("the complete wrapped segment stays within the byte cap for multibyte memory", () => {
+    writeFileSync(join(dir, "ROCKY.md"), "🙂".repeat(MAX_MEMORY_BYTES));
+    const seg = loadProjectMemory(dir)!;
+
+    expect(Buffer.byteLength(seg, "utf8")).toBeLessThanOrEqual(MAX_MEMORY_BYTES);
+    expect(seg).toContain("truncated");
+    expect(seg).not.toContain("�");
+    expect(seg).toEndWith("</project-memory>");
   });
 
   test("an unreadable memory file fails loudly, not silently", () => {

@@ -16,7 +16,19 @@ export const MEMORY_FILES = ["ROCKY.md", "AGENTS.md"] as const;
  * would tax every turn. Anything this long belongs in the repo as docs the
  * agent reads on demand.
  */
-export const MAX_MEMORY_BYTES = 24_000;
+export const MAX_MEMORY_BYTES = 24 * 1024;
+
+function truncateUtf8(text: string, maxBytes: number): string {
+  let bytes = 0;
+  let end = 0;
+  for (const character of text) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > maxBytes) break;
+    bytes += characterBytes;
+    end += character.length;
+  }
+  return text.slice(0, end);
+}
 
 /**
  * Returns a system-prompt segment, or undefined when the project keeps none.
@@ -38,20 +50,22 @@ export function loadProjectMemory(projectDir: string): string | undefined {
 
     if (!text.trim()) continue;
 
-    if (text.length > MAX_MEMORY_BYTES) {
-      text =
-        `${text.slice(0, MAX_MEMORY_BYTES)}\n` +
-        `… ${name} was truncated at ${MAX_MEMORY_BYTES} bytes; read the file for the rest.`;
-    }
-
-    return [
+    const prefix = `${[
       `<project-memory source="${name}">`,
       "The project keeps these standing instructions for coding agents.",
       "Follow them. When they conflict with the user's request, the user wins.",
-      "",
-      text.trim(),
-      "</project-memory>",
-    ].join("\n");
+    ].join("\n")}\n\n`;
+    const suffix = "\n</project-memory>";
+    const body = text.trim();
+    const segment = `${prefix}${body}${suffix}`;
+    if (Buffer.byteLength(segment, "utf8") <= MAX_MEMORY_BYTES) return segment;
+
+    const notice = `\n… ${name} was truncated to keep project memory within ${MAX_MEMORY_BYTES} bytes; read the file for the rest.`;
+    const contentBytes = Math.max(
+      0,
+      MAX_MEMORY_BYTES - Buffer.byteLength(`${prefix}${notice}${suffix}`, "utf8"),
+    );
+    return `${prefix}${truncateUtf8(body, contentBytes)}${notice}${suffix}`;
   }
   return undefined;
 }
