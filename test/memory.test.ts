@@ -39,10 +39,10 @@ describe("project memory", () => {
     expect(loadProjectMemory(dir)).toBeUndefined();
   });
 
-  test("an empty ROCKY.md still lets AGENTS.md load", () => {
+  test("an existing empty ROCKY.md suppresses the AGENTS.md fallback", () => {
     writeFileSync(join(dir, "ROCKY.md"), "");
     writeFileSync(join(dir, "AGENTS.md"), "fallback");
-    expect(loadProjectMemory(dir)).toContain("fallback");
+    expect(loadProjectMemory(dir)).toBeUndefined();
   });
 
   test("an oversized file is truncated and says so", () => {
