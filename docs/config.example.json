@@ -18,7 +18,7 @@
       "codex": {
         "enabled": true,
         "kind": "codex",
-        "image": "rocky-worker-codex:1.2.3",
+        "image": "rocky-worker-codex:0.150.1",
         "model": "gpt-5.2-codex",
         "timeoutMs": 900000,
         "capabilities": ["typescript", "refactor", "debug"],
@@ -29,7 +29,7 @@
       "claude": {
         "enabled": true,
         "kind": "claude",
-        "image": "rocky-worker-claude:2.1.0",
+        "image": "rocky-worker-claude:2.1.250",
         "timeoutMs": 900000,
         "capabilities": ["architecture", "typescript", "review"],
         "costTier": 3,
@@ -39,7 +39,7 @@
       "opencode": {
         "enabled": false,
         "kind": "opencode",
-        "image": "rocky-worker-opencode:1.0.0",
+        "image": "rocky-worker-opencode:1.18.25",
         "timeoutMs": 900000,
         "capabilities": ["typescript", "local-model"],
         "costTier": 1,
