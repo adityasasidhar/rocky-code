@@ -24,6 +24,16 @@ interface PersistedState {
 interface StreamOutcome {
   terminal?: TrueForgeApi.TurnDoneEvent;
   approvals: TrueForgeApi.UserToolApprovalEvent[];
+  externalActions: Array<
+    TrueForgeApi.McpAuthRequiredEvent | TrueForgeApi.ToolResponseRequiredEvent
+  >;
+}
+
+interface MetadataStream extends AsyncIterable<TrueForgeApi.TurnStreamingEvent> {
+  withMetadata(): AsyncIterable<{
+    data: TrueForgeApi.TurnStreamingEvent;
+    id?: string;
+  }>;
 }
 
 const ROOT_INSTRUCTIONS = `You are Rocky, an orchestration-first terminal coding agent running inside TrueForge.
@@ -39,6 +49,8 @@ For code changes:
 6. Generated task tools stay under .rocky-tools inside Daytona. Require manifest.json with name, purpose, inputSchema, argv command, and expectedOutputs; a restricted run entrypoint; and passing smoke tests. Never load generated code into the Rocky host or persist it across sessions.
 
 Self-repair is allowed only after diagnostics locate the fault in Rocky itself and normal recovery failed. Validate with bun test and bunx tsc --noEmit, request approval, and report that restart is required.`;
+
+const MAX_REPLAY_PAGES = 1_000;
 
 function fqn(config: Config): string {
   if (config.trueforge.model) return config.trueforge.model;
@@ -68,6 +80,25 @@ function usageFromMetrics(metrics: TrueForgeApi.TurnMetrics | undefined): Usage 
 function stopReason(status: string): StopReason {
   if (status === "cancelled") return "aborted";
   return status === "error" ? "refusal" : "end_turn";
+}
+
+function turnEndEvent(
+  status: string,
+  usage: Usage,
+  costUsd?: number,
+): Extract<LoopEvent, { type: "turn_end" }> {
+  return {
+    type: "turn_end",
+    stopReason: stopReason(status),
+    usage,
+    ...(costUsd !== undefined ? { costUsd } : {}),
+  };
+}
+
+function sequenceNumber(id: string | undefined, fallback: number): number {
+  if (!id || !/^\d+$/.test(id)) return fallback;
+  const parsed = Number(id);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function summarizeArgs(args: string): string {
@@ -107,7 +138,9 @@ export class TrueForgeBackend implements AgentBackend {
   private sandbox: BackendStatus["sandbox"] = "unknown";
   private phase: BackendStatus["phase"] = "idle";
   private snapshot: WorkspaceSnapshot | undefined;
+  private deferredActionInputs: TrueForgeApi.TurnInputItem[] = [];
   private readonly toolNames = new Map<string, { name: string; summary: string; preview?: string }>();
+  private readonly threadDepths = new Map<string, number>();
   private brokerEndpoint: { url: string; token: string } | undefined;
   private brokerRegistered = false;
 
@@ -147,6 +180,13 @@ export class TrueForgeBackend implements AgentBackend {
 
   private saveState(): void {
     writeFileSync(this.statePath, `${JSON.stringify(this.state, null, 2)}\n`, { mode: 0o600 });
+  }
+
+  private clearActiveTurn(): void {
+    this.state.activeTurnId = undefined;
+    this.state.lastSequenceNumber = 0;
+    this.deferredActionInputs = [];
+    this.saveState();
   }
 
   private async ensureSession(): Promise<string> {
@@ -219,15 +259,19 @@ export class TrueForgeBackend implements AgentBackend {
     return this.snapshot;
   }
 
-  private userInput(prompt: string): TrueForgeApi.UserMessage {
-    if (this.state.snapshotAttached) return { type: "user.message", content: prompt };
+  private userInput(prompt: string, extraSystem: string[] = []): TrueForgeApi.UserMessage {
+    const contextualPrompt =
+      extraSystem.length === 0
+        ? prompt
+        : `<rocky_turn_instructions>\n${extraSystem.join("\n\n")}\n</rocky_turn_instructions>\n\n${prompt}`;
+    if (this.state.snapshotAttached) return { type: "user.message", content: contextualPrompt };
     const snapshot = this.workspaceSnapshot();
     return {
       type: "user.message",
       content: [
         {
           type: "text",
-          text: `${prompt}\n\n<rocky_workspace_snapshot id="${snapshot.id}">The attached sanitized archive is the immutable delegation baseline. Validate candidate patches against it before requesting workspace application.</rocky_workspace_snapshot>`,
+          text: `${contextualPrompt}\n\n<rocky_workspace_snapshot id="${snapshot.id}">The attached sanitized archive is the immutable delegation baseline. Validate candidate patches against it before requesting workspace application.</rocky_workspace_snapshot>`,
         },
         {
           type: "file",
@@ -239,14 +283,18 @@ export class TrueForgeBackend implements AgentBackend {
   }
 
   mapEvent(event: TrueForgeApi.TurnStreamingEvent, replay = false): LoopEvent[] {
-    const depth = "threadId" in event && event.threadId && event.threadId !== "main" ? 1 : undefined;
+    const depth =
+      "threadId" in event && event.threadId && event.threadId !== "main"
+        ? (this.threadDepths.get(event.threadId) ?? 1)
+        : undefined;
     switch (event.type) {
       case "turn.created":
+        if (replay) return [];
         this.state.activeTurnId = event.turnId;
         this.saveState();
         return [{ type: "infrastructure", component: "trueforge", status: "running", detail: `turn ${event.turnId.slice(0, 8)}` }];
       case "sandbox.created":
-        this.sandbox = "ready";
+        if (!replay) this.sandbox = "ready";
         return [{ type: "infrastructure", component: "sandbox", status: "ready", detail: event.sandboxId }];
       case "mcp.initialize":
         return [
@@ -258,23 +306,34 @@ export class TrueForgeBackend implements AgentBackend {
             ...(depth ? { depth } : {}),
           },
         ];
-      case "thread.created":
-        this.phase = "delegated";
-        return [{ type: "thread_start", id: event.threadId, title: event.title, agent: event.agentInfo.name, depth: 1 }];
-      case "thread.done":
+      case "thread.created": {
+        if (!replay) this.phase = "delegated";
+        const parentDepth =
+          event.parent.threadId === "main"
+            ? 0
+            : (this.threadDepths.get(event.parent.threadId) ?? 1);
+        const threadDepth = parentDepth + 1;
+        this.threadDepths.set(event.threadId, threadDepth);
+        return [{ type: "thread_start", id: event.threadId, title: event.title, agent: event.agentInfo.name, depth: threadDepth }];
+      }
+      case "thread.done": {
+        const threadDepth = this.threadDepths.get(event.threadId) ?? depth ?? 1;
+        this.threadDepths.delete(event.threadId);
         return [
           {
             type: "thread_end",
             id: event.threadId,
             ok: event.state.status === "done",
             ...(event.state.status === "error" ? { detail: event.state.error } : {}),
-            depth: 1,
+            depth: threadDepth,
           },
         ];
+      }
       case "model.message.delta": {
         const events: LoopEvent[] = [];
         if (event.reasoningContent) events.push({ type: "thinking_delta", text: event.reasoningContent, ...(depth ? { depth } : {}) });
         if (event.content) events.push({ type: "text_delta", text: event.content, ...(depth ? { depth } : {}) });
+        if (event.refusal) events.push({ type: "text_delta", text: event.refusal, ...(depth ? { depth } : {}) });
         return events;
       }
       case "model.message": {
@@ -292,6 +351,7 @@ export class TrueForgeBackend implements AgentBackend {
           if (event.reasoningContent) events.push({ type: "thinking_delta", text: event.reasoningContent, ...(depth ? { depth } : {}) });
           const content = textContent(event.content);
           if (content) events.push({ type: "text_delta", text: content, ...(depth ? { depth } : {}) });
+          if (event.refusal) events.push({ type: "text_delta", text: event.refusal, ...(depth ? { depth } : {}) });
         }
         return events;
       }
@@ -308,12 +368,64 @@ export class TrueForgeBackend implements AgentBackend {
         ];
       }
       case "mcp.auth_required":
-        return [{ type: "notice", text: "MCP authorization is required in TrueForge before this turn can continue." }];
+        return [
+          {
+            type: "notice",
+            text: `MCP authorization required for ${event.mcpServers
+              .map((server) => `${server.name}: ${server.authUrl}`)
+              .join(", ")}. Complete authorization, then retry your prompt.`,
+          },
+        ];
       case "tool.response_required":
-        return [{ type: "notice", text: "A tool response is required before TrueForge can continue." }];
+        return [
+          {
+            type: "notice",
+            text: `TrueForge is waiting for ${event.toolCalls.length} external tool response${event.toolCalls.length === 1 ? "" : "s"}. The pending turn was preserved.`,
+          },
+        ];
       case "tool.approval_required":
-      case "turn.done":
         return [];
+      case "turn.done": {
+        if (!replay) return [];
+        const metrics = event.state.metrics;
+        const events: LoopEvent[] = [];
+        if (event.state.status === "error") {
+          events.push({ type: "notice", text: event.state.message });
+        }
+        events.push(
+          turnEndEvent(
+            event.state.status,
+            usageFromMetrics(metrics),
+            metrics?.totalCostInUsd,
+          ),
+        );
+        return events;
+      }
+    }
+  }
+
+  private async *streamEvents(
+    stream: AsyncIterable<TrueForgeApi.TurnStreamingEvent>,
+  ): AsyncGenerator<
+    { event: TrueForgeApi.TurnStreamingEvent; sequenceNumber: number },
+    void,
+    undefined
+  > {
+    const metadataStream = stream as Partial<MetadataStream>;
+    if (typeof metadataStream.withMetadata === "function") {
+      for await (const envelope of metadataStream.withMetadata()) {
+        yield {
+          event: envelope.data,
+          sequenceNumber: sequenceNumber(
+            envelope.id,
+            this.state.lastSequenceNumber + 1,
+          ),
+        };
+      }
+      return;
+    }
+    for await (const event of stream) {
+      yield { event, sequenceNumber: this.state.lastSequenceNumber + 1 };
     }
   }
 
@@ -359,12 +471,14 @@ export class TrueForgeBackend implements AgentBackend {
     let stream = initialStream;
     let terminal: TrueForgeApi.TurnDoneEvent | undefined;
     const approvals: TrueForgeApi.UserToolApprovalEvent[] = [];
+    const externalActions: StreamOutcome["externalActions"] = [];
     let reconnects = 0;
 
     for (;;) {
       try {
-        for await (const event of stream) {
-          this.state.lastSequenceNumber++;
+        for await (const item of this.streamEvents(stream)) {
+          const { event } = item;
+          this.state.lastSequenceNumber = item.sequenceNumber;
           if (event.type === "turn.created") this.state.activeTurnId = event.turnId;
           this.saveState();
           if (event.type === "tool.approval_required") {
@@ -376,13 +490,16 @@ export class TrueForgeBackend implements AgentBackend {
             };
             approvals.push(...(await this.requestApprovals(event, options.approveAction)));
           }
+          if (event.type === "mcp.auth_required" || event.type === "tool.response_required") {
+            externalActions.push(event);
+          }
           if (event.type === "turn.done") terminal = event;
           for (const mapped of this.mapEvent(event)) yield mapped;
         }
-        if (!terminal && approvals.length === 0) {
+        if (!terminal && approvals.length === 0 && externalActions.length === 0) {
           throw new Error("TrueForge stream ended before turn.done");
         }
-        return { ...(terminal ? { terminal } : {}), approvals };
+        return { ...(terminal ? { terminal } : {}), approvals, externalActions };
       } catch (error) {
         if (options.signal.aborted) throw error;
         if (!this.state.activeTurnId || reconnects >= 2) throw error;
@@ -414,27 +531,123 @@ export class TrueForgeBackend implements AgentBackend {
       yield { type: "phase", phase: "planning", detail: "TrueForge root agent" };
 
       let promptStarted = !this.state.activeTurnId;
-      let inputs: TrueForgeApi.TurnInputItem[] = promptStarted ? [this.userInput(prompt)] : [];
+      let inputs: TrueForgeApi.TurnInputItem[] = promptStarted
+        ? [this.userInput(prompt, options.extraSystem)]
+        : this.deferredActionInputs;
+      this.deferredActionInputs = [];
       let pendingStream: AsyncIterable<TrueForgeApi.TurnStreamingEvent> | undefined;
+      let resumeMcpAuth = false;
       if (this.state.activeTurnId) {
         this.connection = "connecting";
+        const activeTurnId = this.state.activeTurnId;
         yield {
           type: "infrastructure",
           component: "trueforge",
           status: "connecting",
-          detail: `resuming turn ${this.state.activeTurnId.slice(0, 8)}`,
+          detail: `resuming turn ${activeTurnId.slice(0, 8)}`,
         };
-        pendingStream = await this.client.sessions.subscribeToTurn(
-          sessionId,
-          this.state.activeTurnId,
-          { afterSequenceNumber: this.state.lastSequenceNumber },
-          { abortSignal: options.signal, timeoutInSeconds: 3_600 },
-        );
+        const persistedTurn = await this.client.sessions.getTurn(sessionId, activeTurnId);
+        if (persistedTurn.data.state.status === "running") {
+          pendingStream = await this.client.sessions.subscribeToTurn(
+            sessionId,
+            activeTurnId,
+            { afterSequenceNumber: this.state.lastSequenceNumber },
+            { abortSignal: options.signal, timeoutInSeconds: 3_600 },
+          );
+        } else {
+          const events = await this.client.sessions.listTurnEvents(sessionId, activeTurnId, {
+            limit: 100,
+            order: "asc",
+          });
+          for await (const event of events) {
+            // replay() owns user-visible history. This silent pass only
+            // reconstructs tool metadata needed to resolve pending actions.
+            this.mapEvent(event, true);
+          }
+          if (persistedTurn.data.state.status === "error") {
+            yield { type: "notice", text: persistedTurn.data.state.message };
+          }
+          if (persistedTurn.data.state.status === "done") {
+            const externalActions = persistedTurn.data.state.requiredActions.filter(
+              (
+                action,
+              ): action is
+                | TrueForgeApi.McpAuthRequiredEvent
+                | TrueForgeApi.ToolResponseRequiredEvent =>
+                action.type === "mcp.auth_required" ||
+                action.type === "tool.response_required",
+            );
+            const responseActions = externalActions.filter(
+              (action): action is TrueForgeApi.ToolResponseRequiredEvent =>
+                action.type === "tool.response_required",
+            );
+            if (responseActions.length > 0) {
+              const responses: TrueForgeApi.UserToolResponseEvent[] = responseActions.flatMap(
+                (action) =>
+                  action.toolCalls.map((call) => ({
+                    type: "user.tool_response" as const,
+                    threadId: action.threadId,
+                    toolCallId: call.id,
+                    content: prompt,
+                  })),
+              );
+              inputs = [...responses, ...inputs];
+              promptStarted = true;
+            }
+            if (externalActions.length > 0) {
+              for (const action of externalActions) {
+                for (const mapped of this.mapEvent(action, true)) yield mapped;
+              }
+              resumeMcpAuth = externalActions.some(
+                (action) => action.type === "mcp.auth_required",
+              );
+              this.phase = "planning";
+            }
+            const decidedCallIds = new Set(
+              inputs
+                .filter(
+                  (input): input is TrueForgeApi.UserToolApprovalEvent =>
+                    input.type === "user.tool_approval",
+                )
+                .map((input) => input.toolCallId),
+            );
+            for (const action of persistedTurn.data.state.requiredActions) {
+              if (action.type !== "tool.approval_required") continue;
+              const pendingCalls = action.toolCalls.filter(
+                (call) => !decidedCallIds.has(call.id),
+              );
+              if (pendingCalls.length === 0) continue;
+              this.phase = "awaiting_approval";
+              yield {
+                type: "phase",
+                phase: "awaiting_approval",
+                detail: `${pendingCalls.length} tool call(s)`,
+              };
+              inputs.push(
+                ...(await this.requestApprovals(
+                  { ...action, toolCalls: pendingCalls },
+                  options.approveAction,
+                )),
+              );
+            }
+          }
+          if (inputs.length === 0 && !resumeMcpAuth) {
+            this.clearActiveTurn();
+            yield {
+              type: "infrastructure",
+              component: "trueforge",
+              status: "done",
+              detail: "persisted turn recovered",
+            };
+            inputs = [this.userInput(prompt, options.extraSystem)];
+            promptStarted = true;
+          }
+        }
         this.connection = "ready";
       }
 
       let approvalRounds = 0;
-      while (pendingStream || inputs.length > 0) {
+      while (pendingStream || resumeMcpAuth || inputs.length > 0) {
         if (options.signal.aborted) throw new Error("aborted");
         let stream: AsyncIterable<TrueForgeApi.TurnStreamingEvent>;
         if (pendingStream) {
@@ -442,17 +655,20 @@ export class TrueForgeBackend implements AgentBackend {
           pendingStream = undefined;
         } else {
           this.state.lastSequenceNumber = 0;
+          const resumingMcpAuth = resumeMcpAuth;
+          const request = resumingMcpAuth ? {} : { input: inputs };
           stream = await this.client.sessions.createTurnStream(
             sessionId,
-            { input: inputs },
+            request,
             { abortSignal: options.signal, timeoutInSeconds: 3_600 },
           );
+          resumeMcpAuth = false;
+          if (!resumingMcpAuth) inputs = [];
           if (!this.state.snapshotAttached) {
             this.state.snapshotAttached = true;
             this.saveState();
           }
         }
-        inputs = [];
         const outcome = yield* this.consumeStream(sessionId, stream, options);
         inputs.push(...outcome.approvals);
 
@@ -468,6 +684,38 @@ export class TrueForgeBackend implements AgentBackend {
           }
         }
 
+        const externalActions = new Map(
+          outcome.externalActions.map((action) => [action.id, action] as const),
+        );
+        if (outcome.terminal?.state.status === "done") {
+          for (const action of outcome.terminal.state.requiredActions) {
+            if (
+              action.type === "mcp.auth_required" ||
+              action.type === "tool.response_required"
+            ) {
+              externalActions.set(action.id, action);
+            }
+          }
+        }
+        if (externalActions.size > 0) {
+          this.deferredActionInputs = [...inputs];
+          this.phase = "awaiting_approval";
+          yield {
+            type: "phase",
+            phase: "awaiting_approval",
+            detail: `${externalActions.size} external action(s)`,
+          };
+          const streamedActionIds = new Set(
+            outcome.externalActions.map((action) => action.id),
+          );
+          for (const action of externalActions.values()) {
+            if (streamedActionIds.has(action.id)) continue;
+            for (const mapped of this.mapEvent(action)) yield mapped;
+          }
+          yield turnEndEvent(finalStatus, finalUsage, finalCostUsd);
+          return;
+        }
+
         if (inputs.length > 0) {
           approvalRounds++;
           if (approvalRounds > 10) throw new Error("TrueForge approval resume limit exceeded");
@@ -477,40 +725,33 @@ export class TrueForgeBackend implements AgentBackend {
 
         if (!promptStarted) {
           if (!outcome.terminal) throw new Error("recovered TrueForge turn did not reach a terminal state");
-          this.state.activeTurnId = undefined;
-          this.state.lastSequenceNumber = 0;
-          this.saveState();
+          this.clearActiveTurn();
           yield {
             type: "infrastructure",
             component: "trueforge",
             status: "done",
             detail: "persisted turn recovered",
           };
-          inputs = [this.userInput(prompt)];
+          yield turnEndEvent(finalStatus, finalUsage, finalCostUsd);
+          finalStatus = "done";
+          finalUsage = emptyUsage();
+          finalCostUsd = undefined;
+          inputs = [this.userInput(prompt, options.extraSystem)];
           promptStarted = true;
           this.phase = "planning";
         }
       }
 
-      this.state.activeTurnId = undefined;
-      this.state.lastSequenceNumber = 0;
-      this.saveState();
+      this.clearActiveTurn();
       this.phase = "idle";
       yield { type: "phase", phase: "idle" };
-      yield {
-        type: "turn_end",
-        stopReason: stopReason(finalStatus),
-        usage: finalUsage,
-        ...(finalCostUsd !== undefined ? { costUsd: finalCostUsd } : {}),
-      };
+      yield turnEndEvent(finalStatus, finalUsage, finalCostUsd);
     } catch (error) {
       this.phase = "idle";
       if (options.signal.aborted) {
         await this.cancel().catch(() => undefined);
-        this.state.activeTurnId = undefined;
-        this.state.lastSequenceNumber = 0;
-        this.saveState();
-        yield { type: "turn_end", stopReason: "aborted", usage: finalUsage };
+        this.clearActiveTurn();
+        yield turnEndEvent("cancelled", finalUsage);
         return;
       }
       this.connection = "error";
@@ -539,11 +780,64 @@ export class TrueForgeBackend implements AgentBackend {
     return page.data;
   }
 
+  private *replayPage(items: readonly TrueForgeApi.SessionEventItem[]): Generator<LoopEvent> {
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item = items[index];
+      if (!item) continue;
+      yield* this.mapEvent(item.event as TrueForgeApi.TurnStreamingEvent, true);
+    }
+  }
+
   async *replay(): AsyncGenerator<LoopEvent, void, undefined> {
     if (!this.state.sessionId) return;
-    const page = await this.client.sessions.listEvents(this.state.sessionId, { limit: 100 });
-    for (const item of [...page.data].reverse()) {
-      for (const event of this.mapEvent(item.event as TrueForgeApi.TurnStreamingEvent, true)) yield event;
+    this.connection = "connecting";
+    try {
+      const newestPage = await this.client.sessions.listEvents(this.state.sessionId, {
+        limit: 100,
+      });
+      const olderPageTokens: string[] = [];
+      const seenPageTokens = new Set<string>();
+      let pageCount = 1;
+      let oldestPage = newestPage;
+      let nextPageToken = newestPage.response.pagination.nextPageToken;
+      while (nextPageToken) {
+        if (seenPageTokens.has(nextPageToken)) {
+          throw new Error("TrueForge history replay failed: pagination token repeated");
+        }
+        if (pageCount >= MAX_REPLAY_PAGES) {
+          throw new Error(
+            `TrueForge history replay exceeded ${MAX_REPLAY_PAGES} pages`,
+          );
+        }
+        seenPageTokens.add(nextPageToken);
+        olderPageTokens.push(nextPageToken);
+        oldestPage = await this.client.sessions.listEvents(this.state.sessionId, {
+          limit: 100,
+          pageToken: nextPageToken,
+        });
+        pageCount++;
+        nextPageToken = oldestPage.response.pagination.nextPageToken;
+      }
+
+      if (olderPageTokens.length > 0) {
+        yield* this.replayPage(oldestPage.data);
+        for (let index = olderPageTokens.length - 2; index >= 0; index--) {
+          const pageToken = olderPageTokens[index];
+          if (!pageToken) continue;
+          const page = await this.client.sessions.listEvents(this.state.sessionId, {
+            limit: 100,
+            pageToken,
+          });
+          yield* this.replayPage(page.data);
+        }
+      }
+      yield* this.replayPage(newestPage.data);
+      this.phase = "idle";
+      this.connection = "ready";
+    } catch (error) {
+      this.phase = "idle";
+      this.connection = "error";
+      throw error;
     }
   }
 }

@@ -13,6 +13,7 @@ import { ensureBrokerServer, startBrokerServer, type BrokerServer } from "./brok
 import { WorkerBroker } from "./broker/broker.ts";
 import { ConfigError, loadConfig } from "./config/load.ts";
 import type { Config, PermissionMode } from "./config/schema.ts";
+import type { LoopEvent } from "./core/loop.ts";
 import { loadProjectMemory } from "./core/memory.ts";
 import { PLAN_MODE_PROMPT } from "./core/prompt.ts";
 import { createProvider, ProviderConfigError } from "./core/provider/index.ts";
@@ -343,6 +344,40 @@ function explain(e: unknown): { message: string; code: number } {
 }
 
 type RenderOpts = { verbose: boolean; showThinking: boolean; memory?: string };
+
+function recordBackendEvent(
+  session: Session,
+  backend: AgentBackend,
+  event: LoopEvent,
+): void {
+  if (event.type !== "turn_end" || backend.kind !== "trueforge") return;
+  session.recordUsage(event.usage);
+  if (event.costUsd !== undefined) session.recordBackendCost(event.costUsd);
+  session.turns++;
+}
+
+/** Restore persisted TrueForge scrollback without making a history outage fatal to the REPL. */
+async function replayHistory(
+  session: Session,
+  backend: AgentBackend,
+  renderer: Renderer,
+): Promise<void> {
+  if (!backend.replay) return;
+  try {
+    for await (const event of backend.replay()) {
+      recordBackendEvent(session, backend, event);
+      renderer.handle(event);
+    }
+  } catch (error) {
+    renderer.handle({
+      type: "notice",
+      text: `could not restore persisted session history: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  } finally {
+    renderer.close();
+  }
+}
+
 /** Drive one turn and return whether it was interrupted. */
 async function drive(
   session: Session,
@@ -401,12 +436,8 @@ async function drive(
     })) {
       if (event.type === "turn_end") {
         if (event.stopReason === "aborted") interrupted = true;
-        if (backend.kind === "trueforge") {
-          session.recordUsage(event.usage);
-          if (event.costUsd !== undefined) session.recordBackendCost(event.costUsd);
-          session.turns++;
-        }
       }
+      recordBackendEvent(session, backend, event);
       renderer.handle(event);
     }
   } finally {
@@ -664,6 +695,7 @@ async function replFooter(
   );
 
   const log = new ToolLog();
+  await replayHistory(session, backend, new Renderer(process.stdout, { ...opts, log }));
   const statusInfo = () => {
     const u = session.totalUsage;
     const state = backend.status();
@@ -707,7 +739,7 @@ async function replFooter(
       yellow(`footer UI unavailable (${e instanceof Error ? e.message : String(e)})`),
     );
     console.error(yellow("falling back to the legacy interface"));
-    return repl(session, backend, engine, opts);
+    return repl(session, backend, engine, opts, true);
   }
   engine.setAsk(footerAsk(store));
 
@@ -809,6 +841,7 @@ async function repl(
   backend: AgentBackend,
   engine: PermissionEngine,
   opts: RenderOpts & { initialPrompt?: string },
+  historyRestored = false,
 ): Promise<number> {
   const historyPath = join(homedir(), ".rocky", "history");
   let history: string[];
@@ -830,9 +863,16 @@ async function repl(
   );
 
   const log = new ToolLog();
+  const scrollback = new Scrollback();
+  if (!historyRestored) {
+    await replayHistory(
+      session,
+      backend,
+      new Renderer(process.stdout, { ...opts, log, scrollback }),
+    );
+  }
   const statusBar = new StatusBar(process.stdout);
   statusBar.enable();
-  const scrollback = new Scrollback();
   const updateStatusBar = (busy: 0 | 1 | 2 = 0, wait?: string) => {
     const u = session.totalUsage;
     const state = backend.status();
