@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import {
   loadTask,
@@ -160,6 +166,56 @@ describe("bench harness", () => {
 
       expect(result.passed).toBe(false);
       expect(result.verifyOutput).toContain("Verifier timed out");
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test("a SIGTERM-ignoring descendant does not outlive the verifier", async () => {
+    const root = tempDir();
+    try {
+      const pidFile = join(root, "survivor.pid");
+      // The descendant redirects the pipes it inherited and ignores SIGTERM, so
+      // the leader's exit closes stdout/stderr and resolves every promise the
+      // verifier awaits while this process is still running. Only an explicit
+      // SIGKILL sweep of the group reaps it.
+      const task = makeTask(
+        root,
+        `bash -c 'trap "" TERM; exec >/dev/null 2>&1; echo $$ > ${pidFile}; ` +
+          `for _ in $(seq 1 200); do sleep 1; done' & sleep 30`,
+      );
+      const provider = new MockProvider([
+        { content: [text("done")], stopReason: "end_turn" },
+      ]);
+
+      const result = await runTrial(task, provider, defaultConfig(), undefined, {
+        trialTimeoutMs: 10_000,
+        verifyTimeoutMs: 800,
+      });
+      expect(result.verifyOutput).toContain("Verifier timed out");
+
+      const survivor = Number(readFileSync(pidFile, "utf8").trim());
+      expect(Number.isInteger(survivor)).toBe(true);
+
+      const alive = () => {
+        try {
+          process.kill(survivor, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      // SIGKILL is asynchronous; give the kernel a moment to reap it.
+      for (let i = 0; i < 40 && alive(); i++) await Bun.sleep(25);
+      const escaped = alive();
+      if (escaped) {
+        try {
+          process.kill(survivor, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+      expect(escaped).toBe(false);
     } finally {
       cleanup(root);
     }

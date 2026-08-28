@@ -337,7 +337,15 @@ async function verify(
     };
   } finally {
     clearTimeout(timer);
+    // The awaited promises above resolve once the group *leader* exits and its
+    // pipes close. A descendant that ignores SIGTERM and redirects the pipes it
+    // inherited satisfies both conditions while still running, so cancelling the
+    // pending escalation here would let it outlive the trial and its temporary
+    // repository. Sweep the group with SIGKILL instead of clearing the timer:
+    // the SIGTERM grace already elapsed while we waited for the leader, and the
+    // group id stays valid for surviving members after the leader is reaped.
     if (escalation) clearTimeout(escalation);
+    if (terminating) signalGroup("SIGKILL");
     signal.removeEventListener("abort", onAbort);
   }
 }
