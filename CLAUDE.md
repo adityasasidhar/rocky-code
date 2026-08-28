@@ -25,9 +25,10 @@ bun run src/cli.ts --tui-smoke                 # hidden TUI harness
 
 bunx tsc --noEmit                              # typecheck; `bun run lint` is the same command
 bun test                                       # full suite
-bun test test/tools/bash.test.ts               # one file
-bun test -t "denies redirection"               # one test by name regex (NOT --filter)
-ROCKY_CONTAINER_TEST=1 bun test test/broker/container.test.ts   # needs rocky-worker-fixture:1
+bun test test/tools/bash.test.ts               # one file (path must contain .test./_test_/.spec.)
+bun test test/tools/bash.test.ts -t "denies redirection"   # one test by name regex (-t/--test-name-pattern; --filter is a Jest-ism, silently no-ops)
+bun test --changed                             # only tests touching files changed vs HEAD
+ROCKY_CONTAINER_TEST=1 bun test test/broker/container.test.ts   # needs the locally-built rocky-worker-fixture:1 image
 bun bench/run.ts                               # bench harness (not run by `bun test`)
 ```
 
@@ -93,12 +94,14 @@ Schema and defaults are in `src/config/schema.ts`; `docs/config.example.json` is
 - `.rocky/` — per-project session artifacts, broker token, archived tool outputs. Gitignored
   via an auto-generated `.rocky/.gitignore` containing `*`.
 - `~/.rocky/settings.json` — persisted allow/deny grants. `~/.rocky/history` — capped at 1000.
-- Project memory: `ROCKY.md` wins over `AGENTS.md`, only one is loaded into `extraSystem`,
-  capped at 24KB, and an unreadable file throws rather than being silently skipped
-  (`src/core/memory.ts`).
+- Project memory: `ROCKY.md` wins over `AGENTS.md` — an existing `ROCKY.md` (even empty)
+  suppresses the `AGENTS.md` fallback entirely, it does not fall through. Only one file is
+  loaded into `extraSystem`, capped at 24KB (UTF-8 byte-bounded), and an unreadable file
+  throws rather than being silently skipped (`src/core/memory.ts`).
 - Secrets come only from env vars *named* by config (`provider.apiKeyEnv`,
   `trueforge.tokenEnv`, `broker.tokenEnv`, worker `credentialEnv`) — values are never inlined
-  into config and never logged.
+  into config and never logged. The same `OPENAI_API_KEY` backs both `openai` and
+  `openai-compatible`; `ollama` is auth-less.
 
 ## Behaviors that surprise people
 

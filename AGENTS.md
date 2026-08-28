@@ -9,10 +9,11 @@
 - **Broker standalone**: `bun run src/cli.ts broker` (bearer-auth on 127.0.0.1; reused if already running)
 - **Typecheck**: `bunx tsc --noEmit` (`lint` alias is same; no separate linter)
 - **Test all**: `bun test`
-- **One file**: `bun test test/path/to/file.test.ts`
-- **One test**: `bun test --filter "test name"`
-- **Container fixture**: `ROCKY_CONTAINER_TEST=1 bun test test/broker/container.test.ts` (requires `rocky-worker-fixture:1` image)
-- **Bench**: `bun bench/run.ts` (not via `bun test`; tasks in `bench/tasks/` are excluded from typecheck)
+- **One file**: `bun test test/path/to/file.test.ts` (path must contain `.test.` / `_test_` / `.spec.`; pass `./foo.test.ts` if Bun treats it as a filter)
+- **One test**: `bun test test/path/file.test.ts -t "regex"` (Bun's name-pattern flag is `-t` / `--test-name-pattern` — `--filter` is a Jest-ism and silently no-ops)
+- **Only changed tests**: `bun test --changed` (compared against HEAD by default)
+- **Container fixture**: `ROCKY_CONTAINER_TEST=1 bun test test/broker/container.test.ts` (requires the locally-built `rocky-worker-fixture:1` image — see README "Worker images")
+- **Bench**: `bun bench/run.ts` (not via `bun test`; `bench/tasks/` is excluded from typecheck because hidden/ overlays only resolve post-run)
 
 ## Runtime & Toolchain
 
@@ -42,7 +43,7 @@
 - **Session artifacts**: `.rocky/` (gitignored via auto-generated `.rocky/.gitignore` containing `*`). Also holds `broker/` token and archived tool outputs (`session/<id>/outputs/`).
 - **Persisted grants/history**: `~/.rocky/settings.json` (allow/deny grants), `~/.rocky/history` (capped 1000, oldest-first on disk).
 - **Project memory**: `ROCKY.md` wins over `AGENTS.md`; only one loaded into `extraSystem`, capped 24KB, unreadable file throws (don't silently ignore). See `src/core/memory.ts`.
-- **API keys**: via env vars named by `provider.apiKeyEnv` / `trueforge.tokenEnv` / `broker.tokenEnv` / worker `credentialEnv` (`ANTHROPIC_API_KEY`, `OPENAI_KEY`, `MINIMAX_API_KEY`, `TRUEFORGE_TOKEN`, `ROCKY_BROKER_TOKEN`). Never log secret values; `doctor` is safe to run.
+- **API keys**: via env vars named by `provider.apiKeyEnv` / `trueforge.tokenEnv` / `broker.tokenEnv` / worker `credentialEnv` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY`, `TRUEFORGE_TOKEN`, `ROCKY_BROKER_TOKEN`). The same `OPENAI_API_KEY` backs both `openai` and `openai-compatible`; `ollama` is auth-less. Never log secret values; `doctor` is safe to run.
 - **Worker images**: must be pinned (`:tag` != `:latest` or `@sha256:` digest) — enforced by `WorkerProfileSchema` `isPinnedImage` (`src/config/schema.ts:11`). Build with explicit `--build-arg` versions (see `README.md` Worker images).
 
 ## Key Conventions
