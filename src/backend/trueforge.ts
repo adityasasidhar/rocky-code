@@ -50,6 +50,8 @@ For code changes:
 
 Self-repair is allowed only after diagnostics locate the fault in Rocky itself and normal recovery failed. Validate with bun test and bunx tsc --noEmit, request approval, and report that restart is required.`;
 
+const MAX_REPLAY_PAGES = 1_000;
+
 function fqn(config: Config): string {
   if (config.trueforge.model) return config.trueforge.model;
   if (config.model.includes("/")) return config.model;
@@ -794,14 +796,26 @@ export class TrueForgeBackend implements AgentBackend {
         limit: 100,
       });
       const olderPageTokens: string[] = [];
+      const seenPageTokens = new Set<string>();
+      let pageCount = 1;
       let oldestPage = newestPage;
       let nextPageToken = newestPage.response.pagination.nextPageToken;
       while (nextPageToken) {
+        if (seenPageTokens.has(nextPageToken)) {
+          throw new Error("TrueForge history replay failed: pagination token repeated");
+        }
+        if (pageCount >= MAX_REPLAY_PAGES) {
+          throw new Error(
+            `TrueForge history replay exceeded ${MAX_REPLAY_PAGES} pages`,
+          );
+        }
+        seenPageTokens.add(nextPageToken);
         olderPageTokens.push(nextPageToken);
         oldestPage = await this.client.sessions.listEvents(this.state.sessionId, {
           limit: 100,
           pageToken: nextPageToken,
         });
+        pageCount++;
         nextPageToken = oldestPage.response.pagination.nextPageToken;
       }
 

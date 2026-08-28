@@ -851,4 +851,74 @@ describe("TrueForge backend", () => {
       costUsd: 0.002,
     });
   });
+
+  test("rejects a repeated replay page token instead of looping", async () => {
+    const stateDir = join(dir, ".rocky", "trueforge");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "session.json"),
+      JSON.stringify({
+        sessionId: "session-cyclic-history",
+        lastSequenceNumber: 0,
+        snapshotAttached: true,
+      }),
+    );
+    let requests = 0;
+    const client = {
+      sessions: {
+        listEvents: async () => {
+          requests++;
+          if (requests > 3) throw new Error("mock stopped infinite pagination");
+          return {
+            data: [],
+            response: {
+              data: [],
+              pagination: { limit: 100, nextPageToken: "repeated-token" },
+            },
+          };
+        },
+      },
+    };
+
+    const backend = new TrueForgeBackend(dir, config(), client as unknown as TrueForge);
+
+    await expect(collect(backend.replay())).rejects.toThrow(/pagination token repeated/);
+    expect(requests).toBe(2);
+    expect(backend.status().connection).toBe("error");
+  });
+
+  test("bounds the number of replay pages", async () => {
+    const stateDir = join(dir, ".rocky", "trueforge");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "session.json"),
+      JSON.stringify({
+        sessionId: "session-unbounded-history",
+        lastSequenceNumber: 0,
+        snapshotAttached: true,
+      }),
+    );
+    let requests = 0;
+    const client = {
+      sessions: {
+        listEvents: async () => {
+          requests++;
+          if (requests > 1_001) throw new Error("mock stopped unbounded pagination");
+          const nextPageToken = `page-${requests + 1}`;
+          return {
+            data: [],
+            response: {
+              data: [],
+              pagination: { limit: 100, nextPageToken },
+            },
+          };
+        },
+      },
+    };
+
+    const backend = new TrueForgeBackend(dir, config(), client as unknown as TrueForge);
+
+    await expect(collect(backend.replay())).rejects.toThrow(/exceeded 1000 pages/);
+    expect(requests).toBe(1_000);
+  });
 });
