@@ -175,26 +175,43 @@ describe("bench harness", () => {
     const root = tempDir();
     try {
       const pidFile = join(root, "survivor.pid");
-      // The descendant redirects the pipes it inherited and ignores SIGTERM, so
+      // The descendant releases the pipes it inherited and ignores SIGTERM, so
       // the leader's exit closes stdout/stderr and resolves every promise the
-      // verifier awaits while this process is still running. Only an explicit
-      // SIGKILL sweep of the group reaps it.
-      const task = makeTask(
-        root,
-        `bash -c 'trap "" TERM; exec >/dev/null 2>&1; echo $$ > ${pidFile}; ` +
-          `for _ in $(seq 1 200); do sleep 1; done' & sleep 30`,
+      // verifier awaits while this process is still running. Only a sweep of
+      // the whole group reaps it.
+      //
+      // The redirection lives in a script rather than the verify command so the
+      // command the harness executes stays free of shell metacharacters.
+      const task = makeTask(root, "bash survivor.sh & sleep 30");
+      writeFileSync(
+        join(task.repoDir, "survivor.sh"),
+        ['trap "" TERM', "exec >/dev/null 2>&1", `echo $$ > ${pidFile}`, "sleep 200", ""].join(
+          "\n",
+        ),
       );
       const provider = new MockProvider([
         { content: [text("done")], stopReason: "end_turn" },
       ]);
 
       const result = await runTrial(task, provider, defaultConfig(), undefined, {
-        trialTimeoutMs: 10_000,
+        trialTimeoutMs: 15_000,
         verifyTimeoutMs: 800,
       });
       expect(result.verifyOutput).toContain("Verifier timed out");
 
-      const survivor = Number(readFileSync(pidFile, "utf8").trim());
+      // The descendant records its pid asynchronously, so the file may not
+      // exist the instant the trial returns. Waiting here keeps a slow start
+      // from being reported as a cleanup failure.
+      let recorded = "";
+      for (let i = 0; i < 100 && !recorded; i++) {
+        try {
+          recorded = readFileSync(pidFile, "utf8").trim();
+        } catch {
+          await Bun.sleep(25);
+        }
+      }
+      expect(recorded).not.toBe("");
+      const survivor = Number(recorded);
       expect(Number.isInteger(survivor)).toBe(true);
 
       const alive = () => {
