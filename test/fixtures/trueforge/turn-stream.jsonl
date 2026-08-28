@@ -1,0 +1,9 @@
+{"id":"1","data":{"type":"turn.created","id":"evt-created","createdAt":"2026-08-27T12:00:00.000Z","threadId":null,"turnId":"turn-fixture","previousTurnId":null,"state":{"status":"running"}}}
+{"id":"2","data":{"type":"sandbox.created","id":"evt-sandbox","createdAt":"2026-08-27T12:00:00.100Z","threadId":null,"sandboxId":"daytona-fixture"}}
+{"id":"3","data":{"type":"mcp.initialize","id":"evt-mcp","createdAt":"2026-08-27T12:00:00.200Z","threadId":"main","mcpServers":[{"id":"broker-id","name":"rocky-worker-broker","status":"connected"}]}}
+{"id":"4","data":{"type":"thread.created","id":"evt-thread-start","createdAt":"2026-08-27T12:00:00.300Z","threadId":"thread-fixture","title":"inspect fixture","agentInfo":{"type":"dynamic","name":"explorer","input":"inspect"},"parent":{"threadId":"main","toolCallId":"call-thread"}}}
+{"id":"5","data":{"type":"model.message.delta","id":"evt-child-delta","createdAt":"2026-08-27T12:00:00.400Z","threadId":"thread-fixture","reasoningContent":"checking ","content":"child result"}}
+{"id":"6","data":{"type":"thread.done","id":"evt-thread-done","createdAt":"2026-08-27T12:00:00.500Z","threadId":"thread-fixture","title":"inspect fixture","state":{"status":"done","output":null}}}
+{"id":"7","data":{"type":"model.message.delta","id":"evt-root-delta","createdAt":"2026-08-27T12:00:00.600Z","threadId":"main","content":"root answer"}}
+{"id":"8","data":{"type":"model.message.delta","id":"evt-refusal-delta","createdAt":"2026-08-27T12:00:00.700Z","threadId":"main","refusal":"cannot perform that action"}}
+{"id":"9","data":{"type":"turn.done","id":"evt-done","createdAt":"2026-08-27T12:00:00.800Z","threadId":null,"state":{"status":"done","completedAt":"2026-08-27T12:00:00.800Z","output":null,"requiredActions":[],"metrics":{"totalInputTokens":12,"totalOutputTokens":4,"totalCostInUsd":0.001}}}}

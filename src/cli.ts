@@ -343,6 +343,22 @@ function explain(e: unknown): { message: string; code: number } {
 }
 
 type RenderOpts = { verbose: boolean; showThinking: boolean; memory?: string };
+
+/** Restore persisted TrueForge scrollback without making a history outage fatal to the REPL. */
+async function replayHistory(backend: AgentBackend, renderer: Renderer): Promise<void> {
+  if (!backend.replay) return;
+  try {
+    for await (const event of backend.replay()) renderer.handle(event);
+  } catch (error) {
+    renderer.handle({
+      type: "notice",
+      text: `could not restore persisted session history: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  } finally {
+    renderer.close();
+  }
+}
+
 /** Drive one turn and return whether it was interrupted. */
 async function drive(
   session: Session,
@@ -664,6 +680,9 @@ async function replFooter(
   );
 
   const log = new ToolLog();
+  if (backend.replay) {
+    await replayHistory(backend, new Renderer(process.stdout, { ...opts, log }));
+  }
   const statusInfo = () => {
     const u = session.totalUsage;
     const state = backend.status();
@@ -830,9 +849,12 @@ async function repl(
   );
 
   const log = new ToolLog();
+  const scrollback = new Scrollback();
+  if (backend.replay) {
+    await replayHistory(backend, new Renderer(process.stdout, { ...opts, log, scrollback }));
+  }
   const statusBar = new StatusBar(process.stdout);
   statusBar.enable();
-  const scrollback = new Scrollback();
   const updateStatusBar = (busy: 0 | 1 | 2 = 0, wait?: string) => {
     const u = session.totalUsage;
     const state = backend.status();
