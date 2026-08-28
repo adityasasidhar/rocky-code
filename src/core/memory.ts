@@ -18,16 +18,51 @@ export const MEMORY_FILES = ["ROCKY.md", "AGENTS.md"] as const;
  */
 export const MAX_MEMORY_BYTES = 24 * 1024;
 
-function truncateUtf8(text: string, maxBytes: number): string {
+const WHITESPACE = /^\s$/u;
+
+function trimBounds(text: string): { start: number; end: number } {
+  let start = 0;
+  while (start < text.length) {
+    const codePoint = text.codePointAt(start);
+    if (codePoint === undefined) break;
+    const character = String.fromCodePoint(codePoint);
+    if (!WHITESPACE.test(character)) break;
+    start += character.length;
+  }
+
+  let end = text.length;
+  while (end > start) {
+    let characterStart = end - 1;
+    const lastUnit = text.charCodeAt(characterStart);
+    if (lastUnit >= 0xdc00 && lastUnit <= 0xdfff && characterStart > start) {
+      const previousUnit = text.charCodeAt(characterStart - 1);
+      if (previousUnit >= 0xd800 && previousUnit <= 0xdbff) characterStart--;
+    }
+    const character = text.slice(characterStart, end);
+    if (!WHITESPACE.test(character)) break;
+    end = characterStart;
+  }
+  return { start, end };
+}
+
+function takeUtf8(
+  text: string,
+  start: number,
+  end: number,
+  maxBytes: number,
+): { value: string; truncated: boolean } {
   let bytes = 0;
-  let end = 0;
-  for (const character of text) {
+  let cursor = start;
+  while (cursor < end) {
+    const codePoint = text.codePointAt(cursor);
+    if (codePoint === undefined) break;
+    const character = String.fromCodePoint(codePoint);
     const characterBytes = Buffer.byteLength(character, "utf8");
     if (bytes + characterBytes > maxBytes) break;
     bytes += characterBytes;
-    end += character.length;
+    cursor += character.length;
   }
-  return text.slice(0, end);
+  return { value: text.slice(start, cursor), truncated: cursor < end };
 }
 
 /**
@@ -48,7 +83,8 @@ export function loadProjectMemory(projectDir: string): string | undefined {
       throw new Error(`cannot read project memory ${name}: ${(e as Error).message}`);
     }
 
-    if (!text.trim()) continue;
+    const bounds = trimBounds(text);
+    if (bounds.start === bounds.end) continue;
 
     const prefix = `${[
       `<project-memory source="${name}">`,
@@ -56,16 +92,22 @@ export function loadProjectMemory(projectDir: string): string | undefined {
       "Follow them. When they conflict with the user's request, the user wins.",
     ].join("\n")}\n\n`;
     const suffix = "\n</project-memory>";
-    const body = text.trim();
-    const segment = `${prefix}${body}${suffix}`;
-    if (Buffer.byteLength(segment, "utf8") <= MAX_MEMORY_BYTES) return segment;
+    const wrapperBytes = Buffer.byteLength(`${prefix}${suffix}`, "utf8");
+    const body = takeUtf8(
+      text,
+      bounds.start,
+      bounds.end,
+      Math.max(0, MAX_MEMORY_BYTES - wrapperBytes),
+    );
+    if (!body.truncated) return `${prefix}${body.value}${suffix}`;
 
     const notice = `\n… ${name} was truncated to keep project memory within ${MAX_MEMORY_BYTES} bytes; read the file for the rest.`;
     const contentBytes = Math.max(
       0,
       MAX_MEMORY_BYTES - Buffer.byteLength(`${prefix}${notice}${suffix}`, "utf8"),
     );
-    return `${prefix}${truncateUtf8(body, contentBytes)}${notice}${suffix}`;
+    const truncatedBody = takeUtf8(text, bounds.start, bounds.end, contentBytes);
+    return `${prefix}${truncatedBody.value}${notice}${suffix}`;
   }
   return undefined;
 }
