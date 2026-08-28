@@ -778,16 +778,46 @@ export class TrueForgeBackend implements AgentBackend {
     return page.data;
   }
 
+  private *replayPage(items: readonly TrueForgeApi.SessionEventItem[]): Generator<LoopEvent> {
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item = items[index];
+      if (!item) continue;
+      yield* this.mapEvent(item.event as TrueForgeApi.TurnStreamingEvent, true);
+    }
+  }
+
   async *replay(): AsyncGenerator<LoopEvent, void, undefined> {
     if (!this.state.sessionId) return;
     this.connection = "connecting";
     try {
-      const page = await this.client.sessions.listEvents(this.state.sessionId, { limit: 100 });
-      const items: TrueForgeApi.SessionEventItem[] = [];
-      for await (const item of page) items.push(item);
-      for (const item of items.reverse()) {
-        for (const event of this.mapEvent(item.event as TrueForgeApi.TurnStreamingEvent, true)) yield event;
+      const newestPage = await this.client.sessions.listEvents(this.state.sessionId, {
+        limit: 100,
+      });
+      const olderPageTokens: string[] = [];
+      let oldestPage = newestPage;
+      let nextPageToken = newestPage.response.pagination.nextPageToken;
+      while (nextPageToken) {
+        olderPageTokens.push(nextPageToken);
+        oldestPage = await this.client.sessions.listEvents(this.state.sessionId, {
+          limit: 100,
+          pageToken: nextPageToken,
+        });
+        nextPageToken = oldestPage.response.pagination.nextPageToken;
       }
+
+      if (olderPageTokens.length > 0) {
+        yield* this.replayPage(oldestPage.data);
+        for (let index = olderPageTokens.length - 2; index >= 0; index--) {
+          const pageToken = olderPageTokens[index];
+          if (!pageToken) continue;
+          const page = await this.client.sessions.listEvents(this.state.sessionId, {
+            limit: 100,
+            pageToken,
+          });
+          yield* this.replayPage(page.data);
+        }
+      }
+      yield* this.replayPage(newestPage.data);
       this.phase = "idle";
       this.connection = "ready";
     } catch (error) {

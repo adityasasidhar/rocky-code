@@ -476,7 +476,17 @@ describe("TrueForge backend", () => {
           },
         }),
         listEvents: async () => ({
-          data: [{ turnId: "turn-completed", event: completed }],
+          data: [
+            { turnId: "turn-completed", event: completed },
+            { turnId: "turn-completed", event: completedMessage },
+          ],
+          response: {
+            data: [
+              { turnId: "turn-completed", event: completed },
+              { turnId: "turn-completed", event: completedMessage },
+            ],
+            pagination: { limit: 100 },
+          },
           async *[Symbol.asyncIterator](): AsyncGenerator<TrueForgeApi.SessionEventItem> {
             yield { turnId: "turn-completed", event: completed };
             yield { turnId: "turn-completed", event: completedMessage };
@@ -780,18 +790,40 @@ describe("TrueForge backend", () => {
         sandboxId: "sandbox-no-longer-live",
       },
     };
+    const requestedPageTokens: Array<string | undefined> = [];
     const client = {
       sessions: {
-        listEvents: async () => ({
-          data: [newerDone, newer, newerCreated],
-          async *[Symbol.asyncIterator](): AsyncGenerator<TrueForgeApi.SessionEventItem> {
-            yield newerDone;
-            yield newer;
-            yield newerCreated;
-            yield historicalSandbox;
-            yield older;
-          },
-        }),
+        listEvents: async (
+          _sessionId: string,
+          request: TrueForgeApi.ListEventsSessionsRequest,
+        ) => {
+          requestedPageTokens.push(request.pageToken);
+          let data: TrueForgeApi.SessionEventItem[];
+          let nextPageToken: string | undefined;
+          if (request.pageToken === "page-2") {
+            data = [newerCreated, historicalSandbox];
+            nextPageToken = "page-3";
+          } else if (request.pageToken === "page-3") {
+            data = [older];
+            nextPageToken = undefined;
+          } else {
+            data = [newerDone, newer];
+            nextPageToken = "page-2";
+          }
+          return {
+            data,
+            response: {
+              data,
+              pagination: {
+                limit: 2,
+                ...(nextPageToken ? { nextPageToken } : {}),
+              },
+            },
+            async *[Symbol.asyncIterator](): AsyncGenerator<TrueForgeApi.SessionEventItem> {
+              yield* data;
+            },
+          };
+        },
       },
     };
 
@@ -802,6 +834,7 @@ describe("TrueForge backend", () => {
       "older",
       "newer",
     ]);
+    expect(requestedPageTokens).toEqual([undefined, "page-2", "page-3", "page-2"]);
     expect(backend.status().connection).toBe("ready");
     expect(backend.status().activeTurnId).toBeUndefined();
     expect(backend.status().phase).toBe("idle");
