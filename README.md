@@ -88,6 +88,8 @@ bun run src/cli.ts                               # go
 `doctor` is the first thing to run and the first thing to show a skeptic. Every
 line below is a check it actually performs, shown here with workers enabled:
 
+![Rocky doctor preflight](docs/assets/doctor.gif)
+
 ```console
 $ bun run src/cli.ts doctor
 ✓ TrueForge            200 OK
