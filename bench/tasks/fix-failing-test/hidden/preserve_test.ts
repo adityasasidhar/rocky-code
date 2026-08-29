@@ -67,13 +67,20 @@ export async function checkPreservedContract(
   try {
     cpSync(repoDir, probe, { recursive: true });
 
-    // Under CI=true, `bun test` fails any run containing `.only` — a guard
-    // against committing a focused test. That is a policy about the runner, not
+    // `bun test` fails any run containing `.only` when it thinks it is on CI,
+    // which it infers from a whole family of variables (CI, GITHUB_ACTIONS,
+    // GITLAB_CI, BUILDKITE, TF_BUILD, …). That is a policy about the runner, not
     // about whether the assertion still enforces anything, and inheriting it
-    // would give this check different verdicts on a laptop and on a CI box. The
-    // probe answers the same question everywhere.
-    const env = { ...process.env };
-    delete env.CI;
+    // gave this check different verdicts on a laptop and on a CI box.
+    //
+    // The child gets an explicit minimal environment rather than the parent's
+    // minus a blocklist: subtracting known names would need updating every time
+    // Bun learns a new CI vendor, while naming what the probe needs cannot rot.
+    const env = {
+      PATH: process.env.PATH ?? "",
+      HOME: process.env.HOME ?? "",
+      TMPDIR: process.env.TMPDIR ?? "",
+    };
 
     // `process.execPath` rather than "bun": the verifier runs wherever the
     // harness put it, and a bare name depends on an inherited PATH.
