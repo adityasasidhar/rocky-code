@@ -1,17 +1,17 @@
 <div align="center">
 
 ```
-╭────────────────────────────────────────────────────────────────────────╮
-│   ▄▟███▙▄     rocky v0.1.0  ♫ Amaze!                                   │
-│  ▐███████▌    trueforge/root-agent · trueforge                         │
-│   ▀▜███▛▀     orchestrate · ~/projects/api-server                      │
-│   ╱╱ ┃ ╲╲     /help for commands · Esc interrupts · Ctrl-C twice exits │
-╰────────────────────────────────────────────────────────────────────────╯
+        ╭────────────────────────────────────────────────────────────────────────╮
+        │   ▄▟███▙▄     rocky v0.1.0  ♫ Amaze!                                   │
+        │  ▐███████▌    trueforge/root-agent · trueforge                         │
+        │   ▀▜███▛▀     orchestrate · ~/projects/api-server                      │
+        │   ╱╱ ┃ ╲╲     /help for commands · Esc interrupts · Ctrl-C twice exits │
+        ╰────────────────────────────────────────────────────────────────────────╯
 ```
 
 # Rocky
 
-**A terminal coding agent that never lets another agent touch your code.**
+**A terminal coding agent that calls its friends and never lets another agent touch your code.**
 
 Rocky hires Codex, Claude Code, and OpenCode as disposable contractors, keeps them
 in sealed containers that have never seen your checkout, and refuses to believe a
