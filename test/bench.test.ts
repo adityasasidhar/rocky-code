@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -551,6 +552,47 @@ describe("visible-test contract", () => {
       cleanup(root);
       cleanup(outside);
     }
+  }, 30_000);
+
+  // Qodo, PR #6: the verifier runs with this task's hidden/ overlay copied into
+  // the repo root. If the probe carried it into the tree where the agent's own
+  // test code runs, that code could read the judge and answer to it.
+  test("the hidden overlay is not visible to the code being judged", async () => {
+    const candidate =
+      `import { expect, test } from "bun:test";\n` +
+      `import { existsSync } from "node:fs";\n` +
+      `import { add } from "../src/math.ts";\n` +
+      `test("cannot see the judge", () => {\n` +
+      `  expect(existsSync("preserve_test.ts")).toBe(false);\n` +
+      `  expect(existsSync("hidden_check.ts")).toBe(false);\n` +
+      `  expect(add(2, 3)).toBe(5);\n});\n`;
+
+    const root = solvedRepo(candidate);
+    try {
+      // The overlay is present in the repo, exactly as the verifier sees it.
+      cpSync(join(TASK_DIR, "hidden"), root, { recursive: true });
+      expect(existsSync(join(root, "preserve_test.ts"))).toBe(true);
+
+      // …and absent from every copy the candidate test actually runs in, so the
+      // assertions above hold and the contract still reads as preserved.
+      expect(await checkPreservedContract(root)).toBeNull();
+    } finally {
+      cleanup(root);
+    }
+  }, 30_000);
+
+  // Qodo, PR #6: a candidate controls both output streams, and three probes run
+  // at once — reading them to completion would let a noisy test exhaust the
+  // verifier rather than fail.
+  test("a test that floods its output is capped, not allowed to exhaust the check", async () => {
+    const reason = await check(
+      `import { expect, test } from "bun:test";\n` +
+        `import { add } from "../src/math.ts";\n` +
+        `test("noisy", () => {\n` +
+        `  for (let i = 0; i < 4000; i++) console.log("x".repeat(200));\n` +
+        `  expect(add(2, 3)).toBe(5);\n});\n`,
+    );
+    expect(reason).toContain("more output than the check will read");
   }, 30_000);
 
   // The mutation runs in throwaway copies; the repo the verifier goes on to
