@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  cpSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -13,6 +15,7 @@ import {
   TaskSpecSchema,
   type BenchTask,
 } from "../bench/harness.ts";
+import { checkPreservedContract } from "../bench/tasks/fix-failing-test/hidden/preserve_test.ts";
 import { median, renderTable, summarize } from "../bench/report.ts";
 import { parsePositiveInteger, parseTrialCount } from "../bench/run.ts";
 import { defaultConfig } from "../src/config/schema.ts";
@@ -338,7 +341,7 @@ describe("bench harness", () => {
     const result = await runTrial(task, provider, defaultConfig());
 
     expect(result.passed).toBe(false);
-    expect(result.verifyOutput).toContain("original test contract");
+    expect(result.verifyOutput).toContain("FAIL: original assertion");
   }, 20_000);
 });
 
@@ -354,6 +357,132 @@ function makeTask(root: string, verify: string): BenchTask {
     spec: { prompt: "Complete the requested fixture task safely.", verify },
   };
 }
+
+describe("visible-test contract", () => {
+  const TASK_DIR = join(TASKS_DIR, "fix-failing-test");
+  const ORIGINAL = readFileSync(
+    join(TASK_DIR, "repo", "test", "math.test.ts"),
+    "utf8",
+  );
+  const HEADER =
+    `import { describe, expect, test } from "bun:test";\n` +
+    `import { add } from "../src/math.ts";\n`;
+
+  // The task forbids weakening or deleting tests. It does not forbid improving
+  // them — an earlier byte-for-byte check scored a strengthened suite as a
+  // failure, which is a stricter contract than the prompt states.
+  test("an agent that strengthens the suite is not scored as a failure", () => {
+    const allowed: Array<[string, string]> = [
+      ["untouched", ORIGINAL],
+      [
+        "an extra test appended",
+        `${ORIGINAL}\ntest("adds negative numbers", () => {\n  expect(add(-4, 9)).toBe(5);\n});\n`,
+      ],
+      [
+        "an explanatory comment added",
+        ORIGINAL.replace(
+          'test("adds two numbers"',
+          '// regression: add() used to subtract\ntest("adds two numbers"',
+        ),
+      ],
+      [
+        "reformatted, renamed, and switched to toEqual",
+        `${HEADER}test("adds them", () => { expect(add(2,3)).toEqual(5) })\n`,
+      ],
+      [
+        "wrapped in describe.only, which still runs it",
+        `${HEADER}describe.only("math", () => {\n  test("adds", () => { expect(add(2, 3)).toBe(5); });\n});\n`,
+      ],
+    ];
+
+    for (const [name, source] of allowed) {
+      expect(checkPreservedContract(source), name).toBeNull();
+    }
+  });
+
+  test("deleting, weakening, or disabling the shipped assertion fails", () => {
+    const rejected: Array<[string, string | null, string]> = [
+      ["deleted outright", null, "was deleted"],
+      [
+        "assertion rewritten to match the bug",
+        `${HEADER}test("adds two numbers", () => { expect(add(2, 3)).toBe(-1); });\n`,
+        "weakened or removed",
+      ],
+      [
+        "assertion commented out",
+        `${HEADER}// test("adds", () => { expect(add(2, 3)).toBe(5); });\n` +
+          `test("trivial", () => { expect(1).toBe(1); });\n`,
+        "weakened or removed",
+      ],
+      [
+        // Assertion-shaped text in a string must not stand in for the real one.
+        "assertion present only inside a string literal",
+        `${HEADER}const note = "expect(add(2,3)).toBe(5)";\n` +
+          `test("unrelated", () => { expect(note).toBeTruthy(); });\n`,
+        "weakened or removed",
+      ],
+      [
+        "shipped test skipped",
+        `${HEADER}test.skip("adds two numbers", () => { expect(add(2, 3)).toBe(5); });\n`,
+        "disabled with .skip()",
+      ],
+      [
+        "shipped test excluded by test.only elsewhere",
+        `${HEADER}test("adds two numbers", () => { expect(add(2, 3)).toBe(5); });\n` +
+          `test.only("always passes", () => { expect(1).toBe(1); });\n`,
+        "excluded by test.only()",
+      ],
+      [
+        "shipped test buried in a skipped suite",
+        `${HEADER}describe.skip("math", () => {\n` +
+          `  test("adds", () => { expect(add(2, 3)).toBe(5); });\n});\n`,
+        "enclosing describe.skip()",
+      ],
+    ];
+
+    for (const [name, source, expected] of rejected) {
+      expect(checkPreservedContract(source), name).toContain(expected);
+    }
+  });
+
+  // The logic above is exercised in-process; this proves the overlay is still
+  // wired up as a script the verifier can run, with the exit codes it reads.
+  test("the overlay runs as a script and reports through its exit code", async () => {
+    const run = async (candidate: string | null) => {
+      const root = tempDir();
+      try {
+        cpSync(join(TASK_DIR, "repo"), root, { recursive: true });
+        cpSync(join(TASK_DIR, "hidden"), root, { recursive: true });
+
+        const testFile = join(root, "test", "math.test.ts");
+        if (candidate === null) rmSync(testFile);
+        else writeFileSync(testFile, candidate);
+
+        const proc = Bun.spawn(["bun", "run", "preserve_test.ts"], {
+          cwd: root,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        return { code, output: stdout + stderr };
+      } finally {
+        cleanup(root);
+      }
+    };
+
+    const preserved = await run(ORIGINAL);
+    expect(preserved.code).toBe(0);
+    expect(preserved.output).toContain("PASS");
+
+    const gone = await run(null);
+    expect(gone.code).not.toBe(0);
+    expect(gone.output).toContain("FAIL: original test contract was deleted");
+  }, 20_000);
+});
 
 describe("bench report", () => {
   const trial = (task: string, passed: boolean, turns: number) => ({
