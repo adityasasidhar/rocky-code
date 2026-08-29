@@ -595,6 +595,22 @@ describe("visible-test contract", () => {
     expect(reason).toContain("more output than the check will read");
   }, 30_000);
 
+  // Qodo, PR #6: flooding on the *mutant* run only. The killed run looks exactly
+  // like one that caught the mutant, so checking the control alone let a suite
+  // that asserts nothing be read as preserving the contract.
+  test("a test that floods only when it spots the mutant is not credited with catching it", async () => {
+    const reason = await check(
+      `import { expect, test } from "bun:test";\n` +
+        `import { add } from "../src/math.ts";\n` +
+        `test("asserts nothing, shouts when mutated", () => {\n` +
+        `  if (add(2, 3) !== 5) {\n` +
+        `    for (let i = 0; i < 4000; i++) console.log("x".repeat(200));\n` +
+        `  }\n` +
+        `  expect(1).toBe(1);\n});\n`,
+    );
+    expect(reason).toContain("more output than the check will read");
+  }, 30_000);
+
   // The mutation runs in throwaway copies; the repo the verifier goes on to
   // test must come back exactly as the agent left it.
   test("the check does not disturb the repository it inspects", async () => {

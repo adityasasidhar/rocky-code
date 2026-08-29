@@ -196,7 +196,10 @@ export async function checkPreservedContract(
     runSuite(repoDir, mutant, CLEAN_ENV),
   ]);
 
-  if (control.flooded) {
+  // Any run, not just the control: a test that floods only when it notices the
+  // mutant would be killed mid-write, and a killed run looks exactly like one
+  // that caught the mutant. Flooding is never evidence about the contract.
+  if (control.flooded || onCi.flooded || broken.flooded) {
     return "the visible test printed more output than the check will read, so its result could not be trusted";
   }
 
