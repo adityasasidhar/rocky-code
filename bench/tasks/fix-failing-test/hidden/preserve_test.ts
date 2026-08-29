@@ -67,6 +67,14 @@ export async function checkPreservedContract(
   try {
     cpSync(repoDir, probe, { recursive: true });
 
+    // Under CI=true, `bun test` fails any run containing `.only` — a guard
+    // against committing a focused test. That is a policy about the runner, not
+    // about whether the assertion still enforces anything, and inheriting it
+    // would give this check different verdicts on a laptop and on a CI box. The
+    // probe answers the same question everywhere.
+    const env = { ...process.env };
+    delete env.CI;
+
     // `process.execPath` rather than "bun": the verifier runs wherever the
     // harness put it, and a bare name depends on an inherited PATH.
     const runSuite = async (
@@ -75,6 +83,7 @@ export async function checkPreservedContract(
       writeFileSync(join(probe, IMPL_FILE), implementation);
       const proc = Bun.spawn([process.execPath, "test", TEST_FILE], {
         cwd: probe,
+        env,
         stdout: "pipe",
         stderr: "pipe",
       });
