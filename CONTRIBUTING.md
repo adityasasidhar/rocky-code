@@ -9,8 +9,9 @@ Rocky is a terminal coding agent that orchestrates disposable workers behind app
 
 ```bash
 bun install
+bun link                                         # expose the local checkout as `rocky`
 cp docs/config.example.json .rocky/config.json   # adjust models and pinned image tags
-bun run src/cli.ts doctor                        # preflight; never prints secret values
+rocky doctor                                     # preflight; never prints secret values
 ```
 
 Set only the environment variables named by the providers and worker profiles you enable (`provider.apiKeyEnv`, `trueforge.tokenEnv`, `broker.tokenEnv`, worker `credentialEnv`). Never commit secrets, and never add code that logs their values.
@@ -18,9 +19,9 @@ Set only the environment variables named by the providers and worker profiles yo
 ## Development loop
 
 ```bash
-bun run src/cli.ts                                   # TrueForge backend (default)
-bun run src/cli.ts --backend local --provider ollama --model qwen3:8b
-bun run src/cli.ts -p "fix the failing test"         # one-shot / non-interactive
+rocky                                                # TrueForge backend (default)
+rocky --backend local --provider ollama --model qwen3:8b
+rocky -p "fix the failing test"                      # one-shot / non-interactive
 ```
 
 Session artifacts land in the gitignored `.rocky/` directory.
