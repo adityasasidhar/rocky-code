@@ -79,10 +79,11 @@ requires a **restart**. Rocky never hot-loads code it wrote.
 ```bash
 git clone https://github.com/adityasasidhar/rocky-code && cd rocky-code
 bun install
+bun link                                         # install the `rocky` command
 
 cp docs/config.example.json .rocky/config.json   # set models + pinned image tags
-bun run src/cli.ts doctor                        # preflight; never prints secrets
-bun run src/cli.ts                               # go
+rocky doctor                                     # preflight; never prints secrets
+rocky                                            # go
 ```
 
 `doctor` is the first thing to run and the first thing to show a skeptic. Every
@@ -91,7 +92,7 @@ line below is a check it actually performs, shown here with workers enabled:
 ![Rocky doctor preflight](docs/assets/doctor.gif)
 
 ```console
-$ bun run src/cli.ts doctor
+$ rocky doctor
 ✓ TrueForge            200 OK
 ✓ root model           claude-opus-4-8
 ✓ Daytona sandbox      enabled in the TrueForge agent spec
@@ -115,10 +116,10 @@ config (`provider.apiKeyEnv`, `trueforge.tokenEnv`, `broker.tokenEnv`, worker
 ### Other ways to run it
 
 ```bash
-bun run src/cli.ts -p "fix the failing test"    # one-shot; piped stdin does this too
-bun run src/cli.ts --backend local \
+rocky -p "fix the failing test"                 # one-shot; piped stdin does this too
+rocky --backend local \
   --provider ollama --model qwen3:8b            # Rocky's original single-model loop
-bun run src/cli.ts broker                       # standalone broker; reused if already up
+rocky broker                                    # standalone broker; reused if already up
 ```
 
 ---
