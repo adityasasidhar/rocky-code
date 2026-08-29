@@ -122,6 +122,69 @@ rocky --backend local \
 rocky broker                                    # standalone broker; reused if already up
 ```
 
+### Adding a model provider
+
+`/connect` lists every provider on [models.dev](https://models.dev) — the same
+catalogue opencode uses — and configures the one you pick. The endpoint, the
+credential variable, the model ids, each model's context window and price all
+come from the catalogue, so nothing has to be typed but the key.
+
+```console
+› /connect
+  ┌─Add provider──────────────────────────────────────────────┐
+  │ search: minimax  (4/209)                                  │
+  │ ❯ MiniMax (minimax.io) · 7 models                         │
+  │   MiniMax (minimaxi.com) · 7 models                       │
+  │   MiniMax Token Plan (minimax.io) · 7 models              │
+  │ type to filter · ↑↓ move · Enter select · Esc cancel      │
+  └───────────────────────────────────────────────────────────┘
+  ┌─MiniMax (minimax.io) · model──────────────────────────────┐
+  │ ❯ MiniMax-M3 · 1049k ctx · $0.3/$1.2 per Mtok · reasoning │
+  └───────────────────────────────────────────────────────────┘
+  ┌─MiniMax (minimax.io) · authentication─────────────────────┐
+  │ ❯ API key · stored 0600 in ~/.rocky/credentials.json      │
+  │   Environment variable (MINIMAX_API_KEY) · not set        │
+  └───────────────────────────────────────────────────────────┘
+  ┌─MiniMax (minimax.io) · API key────────────────────────────┐
+  │ key: ••••••••••••••••••                                   │
+  └───────────────────────────────────────────────────────────┘
+  registered minimax · anthropic · MiniMax-M3
+  provider → minimax · MiniMax-M3 (anthropic)
+```
+
+`/models` switches between every model your registered providers offer, and the
+choice persists. Both commands fall back to a typed, step-by-step prompt when
+the terminal has no dialogs (`ROCKY_LEGACY_TUI=1`, or a piped session).
+
+The same thing without a session, mirroring `opencode providers`:
+
+```bash
+rocky providers                       # credentials, and providers your env supplies
+rocky providers login -p minimax      # register one; -m api|env skips the question
+rocky providers logout minimax        # forget it and its stored key
+rocky models minimax --verbose        # provider/model, with context and price
+rocky models --refresh                # re-fetch the catalogue
+```
+
+**Where the key goes.** Config files stay secret-free. A key you type is written
+to `~/.rocky/credentials.json` at mode `0600` — never to `config.json`, never to
+`~/.rocky/history` — and is masked as you type it. An environment variable always
+wins over a stored key, so a one-off `MINIMAX_API_KEY=… rocky` behaves the way it
+reads; choosing the *Environment variable* method stores nothing at all.
+
+**Coverage.** Rocky drives 181 of the catalogue's 207 providers — everything
+speaking Anthropic, OpenAI, or an OpenAI-compatible protocol. The other 26
+(Bedrock, Vertex, Google, Azure, Groq, …) are still listed, and picking one says
+which SDK it would need rather than pretending it does not exist.
+
+**Backends.** The provider drives the `local` loop; the default TrueForge backend
+takes its model from `trueforge.model`. Registering or switching a provider under
+TrueForge therefore moves the session to the local loop, and says so.
+
+**Offline.** The catalogue is cached at `~/.cache/rocky/models.json` and refreshed
+daily. With no network and no cache, `/connect` still opens, listing the
+providers Rocky knows built-in.
+
 ---
 
 ## What a run looks like

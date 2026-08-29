@@ -12,15 +12,25 @@ import {
 describe("completeSlash", () => {
   test("a partial command completes to its full names", () => {
     const [hits, base] = completeSlash("/p");
-    expect(hits).toEqual(["/permissions", "/plan"]);
+    expect(hits).toEqual(["/permissions", "/plan", "/provider"]);
     expect(base).toBe("/p");
   });
 
   test("a bare slash offers everything", () => {
     const [hits] = completeSlash("/");
-    // Every advertised command completes, plus the /quit alias.
-    expect(hits.length).toBe(SLASH_COMMANDS.length + 1);
+    // Every advertised command completes, plus the unadvertised aliases:
+    // /quit, and the pre-opencode /model and /provider names.
+    const aliases = ["/quit", "/model", "/provider"];
+    expect(hits.length).toBe(SLASH_COMMANDS.length + aliases.length);
     for (const c of SLASH_COMMANDS) expect(hits).toContain(c.name);
+    for (const alias of aliases) expect(hits).toContain(alias);
+  });
+
+  test("the aliases complete but stay out of the advertised list", () => {
+    expect(SLASH_COMMANDS.map((c) => c.name)).not.toContain("/model");
+    expect(SLASH_COMMANDS.map((c) => c.name)).not.toContain("/provider");
+    expect(unknownCommand("/model")).toBeUndefined();
+    expect(unknownCommand("/provider")).toBeUndefined();
   });
 
   test("prose never completes — Tab must not mangle a sentence", () => {

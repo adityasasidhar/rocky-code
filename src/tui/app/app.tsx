@@ -4,13 +4,19 @@
  * editor, the mid-turn key watcher, and the permission prompt: keys route by
  * what is on screen (dialog open → dialog; otherwise editor + global chords).
  */
-import { For, Show, createEffect, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createSignal } from "solid-js";
 import { useKeyboard, useRenderer } from "@opentui/solid";
-import type { FooterStore } from "./store.ts";
+import type { DialogRequest, FooterStore } from "./store.ts";
 import { footerColors } from "./colors.ts";
 import { PromptEditor, type EditorApi } from "./editor.tsx";
 import { StatusRow } from "./statusbar.tsx";
 import { PermissionDialog, DIALOG_PREVIEW_LINES } from "./dialogs.tsx";
+import {
+  PICKER_VISIBLE_ROWS,
+  PROMPT_DIALOG_ROWS,
+  PromptDialog,
+  SelectDialog,
+} from "./pickers.tsx";
 
 const MAX_QUEUED_ROWS = 3;
 const MAX_FOOTER_HEIGHT = 20;
@@ -31,10 +37,15 @@ export function App(props: { store: FooterStore }) {
     const dialog = store.dialog();
     const queuedRows = Math.min(store.queued().length, MAX_QUEUED_ROWS);
     let content: number;
-    if (dialog) {
+    if (dialog?.kind === "permission") {
       const preview = dialog.request.preview?.split("\n") ?? [];
       const previewRows = Math.min(preview.length, DIALOG_PREVIEW_LINES + 1);
       content = 2 + 1 + previewRows + 4; // border + headline + preview + options
+    } else if (dialog?.kind === "select") {
+      // border + search line + rows (at least one, for the empty-state line) + footer hint
+      content = 2 + 1 + Math.max(1, Math.min(dialog.items.length, PICKER_VISIBLE_ROWS)) + 1;
+    } else if (dialog?.kind === "prompt") {
+      content = PROMPT_DIALOG_ROWS;
     } else {
       content = editorRows(); // editor + border + popup + ghost, self-reported
     }
@@ -98,7 +109,26 @@ export function App(props: { store: FooterStore }) {
         }
       >
         {(dialog: () => NonNullable<ReturnType<typeof store.dialog>>) => (
-          <PermissionDialog dialog={dialog()} colors={colors} />
+          <Switch>
+            <Match when={dialog().kind === "permission"}>
+              <PermissionDialog
+                dialog={dialog() as Extract<DialogRequest, { kind: "permission" }>}
+                colors={colors}
+              />
+            </Match>
+            <Match when={dialog().kind === "select"}>
+              <SelectDialog
+                dialog={dialog() as Extract<DialogRequest, { kind: "select" }>}
+                colors={colors}
+              />
+            </Match>
+            <Match when={dialog().kind === "prompt"}>
+              <PromptDialog
+                dialog={dialog() as Extract<DialogRequest, { kind: "prompt" }>}
+                colors={colors}
+              />
+            </Match>
+          </Switch>
         )}
       </Show>
       <StatusRow store={store} colors={colors} />

@@ -16,7 +16,17 @@ import type { Config, PermissionMode } from "./config/schema.ts";
 import type { LoopEvent } from "./core/loop.ts";
 import { loadProjectMemory } from "./core/memory.ts";
 import { PLAN_MODE_PROMPT } from "./core/prompt.ts";
-import { createProvider, ProviderConfigError } from "./core/provider/index.ts";
+import { ProviderConfigError } from "./core/provider/index.ts";
+import { providerFor } from "./core/provider_registry.ts";
+import {
+  awaitingProviderAnswer,
+  awaitingSecret,
+  runProviderCommand,
+  runProviderWizardLine,
+  type ProviderCommandCtx,
+} from "./core/provider_command.ts";
+import { runConnect, runModels } from "./core/connect_command.ts";
+import type { Wizard } from "./config/providers.ts";
 import { Session } from "./core/session.ts";
 import { DEFAULT_CONTEXT_WINDOW, type Provider } from "./core/types.ts";
 import { footerAsk, nonInteractiveAsk, PermissionEngine, ttyAsk } from "./permissions/index.ts";
@@ -78,6 +88,10 @@ ${bold("USAGE")}
   rocky -p "<prompt>"      run one prompt, print the answer, exit
   rocky doctor             verify TrueForge, Daytona, broker, Docker, workers, and workspace safety
   rocky broker             run the localhost MCP worker broker
+  rocky providers          list credentials and environment-supplied providers
+  rocky providers login    register a provider from the models.dev catalog
+  rocky providers logout <id>   forget a provider and its stored key
+  rocky models [provider]  list every model in the catalog as provider/model
 
 ${bold("OPTIONS")}
   -p, --print <prompt>       non-interactive; answer to stdout, trace to stderr
@@ -99,6 +113,8 @@ ${bold("OUTPUT")}
   -v, --verbose              print full tool output
       --show-thinking        stream the model's reasoning
       --theme <name>         opencode | dracula | zenburn | plain (default: opencode)
+      --refresh              re-fetch the models.dev catalog (providers/models)
+  -m, --method <how>         api | env, for providers login (skips the question)
   -h, --help                 show this help
 
 ${bold("EXAMPLES")}
@@ -107,6 +123,8 @@ ${bold("EXAMPLES")}
   rocky --provider openai --model gpt-5 -p "explain src/loop.ts"
   rocky --provider openai-compatible --base-url http://127.0.0.1:8080/v1 --model local
   MINIMAX_API_KEY=... rocky --provider minimax --model MiniMax-M2.7
+  rocky providers login -p minimax -m env
+  rocky models minimax --verbose
 
 ${bold("EXIT CODES")}
   0 ok   1 error   2 bad config   130 interrupted`;
@@ -134,6 +152,9 @@ function parse() {
         help: { type: "boolean", short: "h" },
         // Hidden: split-footer renderer smoke harness (see src/tui/app/smoke.tsx).
         "tui-smoke": { type: "boolean" },
+        // `rocky providers login` / `rocky models`, mirroring opencode's flags.
+        refresh: { type: "boolean" },
+        method: { type: "string", short: "m" },
       },
       allowPositionals: true,
       strict: true,
@@ -209,6 +230,15 @@ async function main(): Promise<number> {
       doctorBroker?.stop();
     }
   }
+  if (subcommand === "providers" || subcommand === "auth" || subcommand === "models") {
+    const { runProvidersSubcommand } = await import("./cli_providers.ts");
+    return runProvidersSubcommand(positionals, config, {
+      ...(values.refresh === true ? { refresh: true } : {}),
+      ...(values.verbose === true ? { verbose: true } : {}),
+      ...(values.provider ? { provider: values.provider } : {}),
+      ...(values.method ? { method: values.method } : {}),
+    });
+  }
   if (subcommand === "broker") {
     const server = startBrokerServer(cwd, config);
     console.log(`${green("✓")} Rocky worker broker listening on ${server.url}`);
@@ -228,7 +258,8 @@ async function main(): Promise<number> {
     provider = trueForgeAccountingProvider(config);
   } else {
     try {
-      provider = createProvider(config.provider);
+      // The registry's stored key is a fallback here; env still wins.
+      provider = providerFor(config.provider, config.activeProvider).provider;
     } catch (e) {
       if (e instanceof ProviderConfigError) {
         console.error(red(e.message));
@@ -505,9 +536,18 @@ async function runSlashCommand(
     log: ToolLog;
     planState: { modeBeforePlan: PermissionMode };
     workerState: { selected: string };
+    provider: ProviderCommandCtx;
   },
 ): Promise<"exit" | "handled" | "prompt"> {
   const { session, backend, engine, log, planState, workerState } = env;
+
+  // A registration in flight owns the next line, whatever it looks like — the
+  // answer to "model?" is not a prompt for the agent, and a pasted key least of
+  // all. This has to come before every other branch for that reason.
+  if (awaitingProviderAnswer(env.provider)) {
+    await runProviderWizardLine(trimmed, env.provider);
+    return "handled";
+  }
 
   if (trimmed === "/exit" || trimmed === "/quit") return "exit";
   if (trimmed === "/help") {
@@ -549,6 +589,19 @@ async function runSlashCommand(
     await session.provider.prepare?.(next);
     session.model = next;
     console.log(gray(`model → ${next} (${compactNumber(session.contextWindow)} ctx)`));
+    return "handled";
+  }
+  if (trimmed === "/provider" || trimmed.startsWith("/provider ")) {
+    await runProviderCommand(trimmed.slice("/provider".length), env.provider);
+    return "handled";
+  }
+  if (trimmed === "/connect" || trimmed.startsWith("/connect ")) {
+    const arg = trimmed.slice("/connect".length).trim();
+    await runConnect(env.provider, arg === "refresh" || arg === "--refresh");
+    return "handled";
+  }
+  if (trimmed === "/models" || trimmed.startsWith("/models ")) {
+    await runModels(env.provider);
     return "handled";
   }
   if (trimmed === "/expand" || trimmed.startsWith("/expand ")) {
@@ -668,6 +721,16 @@ async function runSlashCommand(
   return "prompt";
 }
 
+/** Provider-command output: headline plain, indented detail lines dimmed. */
+function providerOut(line: string): void {
+  console.log(
+    line
+      .split("\n")
+      .map((l, i) => (i === 0 ? l : dim(l)))
+      .join("\n"),
+  );
+}
+
 /** The OpenTUI-footer REPL: scrollback above, live editor/status below. */
 async function replFooter(
   session: Session,
@@ -695,6 +758,19 @@ async function replFooter(
   );
 
   const log = new ToolLog();
+  // `backend` is reassigned by /provider use: activating a registered provider
+  // under TrueForge moves this session onto the local loop. Every read below
+  // goes through the binding, so the swap is picked up without a restart.
+  const providerCtx: ProviderCommandCtx = {
+    session,
+    backendKind: () => backend.kind,
+    switchToLocal: () => {
+      backend = new LocalBackend(session, makeRegistry());
+    },
+    out: providerOut,
+    wizard: { active: null as Wizard | null },
+  };
+
   await replayHistory(session, backend, new Renderer(process.stdout, { ...opts, log }));
   const statusInfo = () => {
     const u = session.totalUsage;
@@ -742,6 +818,12 @@ async function replFooter(
     return repl(session, backend, engine, opts, true);
   }
   engine.setAsk(footerAsk(store));
+  // The pickers only exist under the footer TUI; the legacy REPL leaves `ui`
+  // unset and /connect falls back to the typed wizard there.
+  providerCtx.ui = {
+    select: (opts) => store.askSelect(opts),
+    prompt: (opts) => store.askPrompt(opts),
+  };
 
   // Ctrl-C arrives as a key event while OpenTUI holds raw mode; this covers
   // `kill -INT` from outside the terminal.
@@ -758,12 +840,16 @@ async function replFooter(
       store.setQueued([...submissions.pending]);
       if (input === undefined) break;
       const trimmed = input.trim();
-      if (!trimmed) continue;
+      // An empty line is meaningful mid-registration — it accepts an offered
+      // default or skips the key step. Anywhere else it is a stray Enter.
+      if (!trimmed && !awaitingProviderAnswer(providerCtx)) continue;
 
       const glyph =
         engine.mode === "plan" ? `${magenta("plan")} ${cyan("›")} ` : `${cyan("›")} `;
-      console.log(`${glyph}${trimmed}`);
-      if (!trimmed.startsWith("/")) {
+      // A pasted API key is echoed as bullets and kept out of history: the
+      // scrollback outlives the session, and ~/.rocky/history is plaintext.
+      console.log(`${glyph}${awaitingSecret(providerCtx) ? "••••••••" : trimmed}`);
+      if (!trimmed.startsWith("/") && !awaitingProviderAnswer(providerCtx)) {
         history.unshift(trimmed);
         store.setHistory([...history]);
       }
@@ -775,6 +861,7 @@ async function replFooter(
         log,
         planState,
         workerState,
+        provider: providerCtx,
       });
       if (outcome === "exit") break;
       if (outcome === "handled") {
@@ -863,6 +950,18 @@ async function repl(
   );
 
   const log = new ToolLog();
+  // See replFooter: /provider use can move this session onto the local loop,
+  // so `backend` is a mutable binding rather than a captured constant.
+  const providerCtx: ProviderCommandCtx = {
+    session,
+    backendKind: () => backend.kind,
+    switchToLocal: () => {
+      backend = new LocalBackend(session, makeRegistry());
+    },
+    out: providerOut,
+    wizard: { active: null as Wizard | null },
+  };
+
   const scrollback = new Scrollback();
   if (!historyRestored) {
     await replayHistory(
@@ -944,9 +1043,13 @@ async function repl(
         if (result === undefined) {
           stdinClosed = true;
         } else {
-          console.log(`${glyph}${result.text}`);
+          console.log(`${glyph}${awaitingSecret(providerCtx) ? "••••••••" : result.text}`);
           input = result.text;
-          if (result.text.trim() && !result.text.startsWith("/")) {
+          if (
+            result.text.trim() &&
+            !result.text.startsWith("/") &&
+            !awaitingProviderAnswer(providerCtx)
+          ) {
             history.unshift(result.text);
           }
         }
@@ -954,6 +1057,14 @@ async function repl(
       if (input === undefined) break;
       prefill = "";
       const trimmed = input.trim();
+
+      // A registration in flight owns the next line — this REPL answers most
+      // commands inline, so the check sits ahead of that table, and ahead of
+      // the empty-line guard: Enter accepts a default or skips the key step.
+      if (awaitingProviderAnswer(providerCtx)) {
+        await runProviderWizardLine(trimmed, providerCtx);
+        continue;
+      }
       if (!trimmed) continue;
 
       if (trimmed === "/exit" || trimmed === "/quit") break;
@@ -1066,7 +1177,13 @@ async function repl(
         trimmed === "/heal" ||
         trimmed === "/diff" ||
         trimmed === "/undo" ||
-        trimmed === "/doctor"
+        trimmed === "/doctor" ||
+        trimmed === "/provider" ||
+        trimmed.startsWith("/provider ") ||
+        trimmed === "/connect" ||
+        trimmed.startsWith("/connect ") ||
+        trimmed === "/models" ||
+        trimmed.startsWith("/models ")
       ) {
         const planState: { modeBeforePlan: PermissionMode } = { modeBeforePlan };
         const outcome = await runSlashCommand(trimmed, {
@@ -1075,6 +1192,7 @@ async function repl(
           engine,
           log,
           planState,
+          provider: providerCtx,
           workerState,
         });
         modeBeforePlan = planState.modeBeforePlan;

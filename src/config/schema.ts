@@ -93,6 +93,30 @@ export const ProviderConfigSchema = z.object({
   think: z.boolean().optional(),
 });
 
+/**
+ * A provider saved under a name by `/provider add`. Identical to the singular
+ * `provider` block plus the model it defaults to, so activating one is a
+ * wholesale swap rather than a merge: a half-configured entry must not inherit
+ * `baseUrl` or `think` from whatever was configured before it.
+ */
+export const NamedProviderSchema = ProviderConfigSchema.extend({
+  /** Becomes the session's `model` when this provider is activated. */
+  model: z.string().min(1).optional(),
+  /**
+   * The models.dev provider this came from. Present only for entries added by
+   * picking from the catalog, and only so `/models` knows whose model list to
+   * offer — a hand-written entry that happens to share a name is not the same
+   * provider.
+   */
+  catalogId: z.string().min(1).optional(),
+});
+
+/** Registry keys are what the user types after `/provider use`. */
+export const ProviderNameSchema = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9._-]*$/, "provider names are lowercase [a-z0-9._-]")
+  .max(64);
+
 export const ConfigSchema = z.object({
   /** TrueForge owns the default root loop; `local` preserves Rocky's original loop. */
   backend: BackendKindSchema.default("trueforge"),
@@ -116,6 +140,14 @@ export const ConfigSchema = z.object({
     kind: "anthropic",
     reasoningEffort: false,
   }),
+  /**
+   * Providers registered at runtime by `/provider add`. Purely a registry:
+   * nothing here takes effect until `activeProvider` names one.
+   */
+  providers: z.record(ProviderNameSchema, NamedProviderSchema).default({}),
+  /** Which entry of `providers` supplies `provider`/`model`. See load.ts. */
+  activeProvider: ProviderNameSchema.optional(),
+
   model: z.string().default("claude-opus-4-8"),
   maxTokens: z.number().int().positive().max(128_000).default(32_000),
   effort: EffortSchema.default("high"),
@@ -159,6 +191,7 @@ export const ConfigSchema = z.object({
 
 export type Config = z.infer<typeof ConfigSchema>;
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
+export type NamedProvider = z.infer<typeof NamedProviderSchema>;
 export type PermissionMode = z.infer<typeof PermissionModeSchema>;
 export type BackendKind = z.infer<typeof BackendKindSchema>;
 export type WorkerKind = z.infer<typeof WorkerKindSchema>;

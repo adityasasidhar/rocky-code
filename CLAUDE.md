@@ -88,8 +88,9 @@ Worker images build from `docker/workers/Dockerfile.*` with explicit `--build-ar
 ## Config and state
 
 Precedence low→high (`src/config/load.ts`): defaults → `~/.config/rocky/config.json` →
-`.rocky/config.json` → CLI flags, with `provider`/`trueforge`/`broker` merged one level deep.
-Schema and defaults are in `src/config/schema.ts`; `docs/config.example.json` is the template.
+`.rocky/config.json` → the active named provider → CLI flags, with
+`provider`/`trueforge`/`broker` merged one level deep. Schema and defaults are in
+`src/config/schema.ts`; `docs/config.example.json` is the template.
 
 - `.rocky/` — per-project session artifacts, broker token, archived tool outputs. Gitignored
   via an auto-generated `.rocky/.gitignore` containing `*`.
@@ -98,7 +99,26 @@ Schema and defaults are in `src/config/schema.ts`; `docs/config.example.json` is
   suppresses the `AGENTS.md` fallback entirely, it does not fall through. Only one file is
   loaded into `extraSystem`, capped at 24KB (UTF-8 byte-bounded), and an unreadable file
   throws rather than being silently skipped (`src/core/memory.ts`).
-- Secrets come only from env vars *named* by config (`provider.apiKeyEnv`,
+- **Provider registry**: `providers` (name → config + `model` + `catalogId`) and
+  `activeProvider`. Activating *replaces* the `provider` block rather than merging into it,
+  so a half-configured entry cannot inherit the previous one's `baseUrl`. Registry keys are
+  models.dev provider ids. `src/config/write.ts` is the only config writer and it refuses to
+  serialize a literal secret.
+- **`/connect` and `/models`** (`src/core/connect_command.ts`) are the opencode-shaped
+  pickers; `/provider` and `/model` survive as unadvertised aliases (`KNOWN` in
+  `src/tui/input.ts`, not `SLASH_COMMANDS`). `src/config/catalog.ts` fetches models.dev,
+  caches to `~/.cache/rocky/models.json`, and maps the `npm` field to a Rocky provider kind —
+  181 of 207 providers map; the rest stay listed but refuse with the SDK name. Costs are
+  quoted per *million* tokens upstream and divided by 1e6 on the way in.
+- **Dialogs are the only masked input path.** `src/tui/app/store.ts` carries a three-way
+  `DialogRequest` union (permission / select / prompt); `pickers.tsx` holds a masked value in
+  a plain local so it never reaches a signal. Non-TTY and `ROCKY_LEGACY_TUI=1` have no
+  dialogs, so both commands fall back to the typed wizard in `src/config/providers.ts` —
+  don't delete it.
+- **Stored keys** live in `~/.rocky/credentials.json` (0600), written only by `/connect` and
+  `rocky providers login`, and are a *fallback* — an env var named by `apiKeyEnv` always wins.
+  Keys never enter `~/.rocky/history` and are masked while being typed.
+- Other secrets come only from env vars *named* by config (`provider.apiKeyEnv`,
   `trueforge.tokenEnv`, `broker.tokenEnv`, worker `credentialEnv`) — values are never inlined
   into config and never logged. The same `OPENAI_API_KEY` backs both `openai` and
   `openai-compatible`; `ollama` is auth-less.

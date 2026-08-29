@@ -23,10 +23,18 @@ export type Env = Record<string, string | undefined>;
  * An API key is never *required* here: the Anthropic SDK can resolve an
  * `ant auth login` profile, and local servers need no auth at all. Missing
  * credentials surface as an auth error at request time, with a hint.
+ *
+ * `fallbackApiKey` is the key `/provider add` stored for this provider. It is
+ * a fallback, not an override: an environment variable set for this run always
+ * wins, so a one-off `OPENAI_API_KEY=… rocky` behaves the way it reads.
  */
-export function createProvider(cfg: ProviderConfig, env: Env = process.env): Provider {
+export function createProvider(
+  cfg: ProviderConfig,
+  env: Env = process.env,
+  fallbackApiKey?: string,
+): Provider {
   const keyEnv = cfg.apiKeyEnv ?? defaultApiKeyEnv(cfg.kind);
-  const apiKey = keyEnv ? env[keyEnv] : undefined;
+  const apiKey = (keyEnv ? env[keyEnv] : undefined) ?? fallbackApiKey;
   const baseUrl = cfg.baseUrl ?? defaultBaseUrl(cfg.kind);
 
   switch (cfg.kind) {

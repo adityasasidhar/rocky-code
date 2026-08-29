@@ -28,7 +28,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/plan", usage: "/plan", what: "toggle plan mode: read-only until you approve" },
   { name: "/cost", usage: "/cost", what: "token and cost breakdown" },
   { name: "/compact", usage: "/compact", what: "summarize the conversation now" },
-  { name: "/model", usage: "/model [id]", what: "show or switch the model" },
+  { name: "/connect", usage: "/connect", what: "add a provider from the models.dev catalog" },
+  { name: "/models", usage: "/models", what: "switch model, from every provider you have" },
   { name: "/expand", usage: "/expand <n>", what: "reprint a collapsed tool result in full" },
   { name: "/permissions", usage: "/permissions", what: "show the active mode and rules" },
   { name: "/info", usage: "/info", what: "session info dashboard" },
@@ -38,8 +39,17 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/exit", usage: "/exit", what: "quit (also /quit or Ctrl-D)" },
 ];
 
-/** Accepted but not advertised: aliases live here, not in the help table. */
-const KNOWN = new Set([...SLASH_COMMANDS.map((c) => c.name), "/quit"]);
+/**
+ * Accepted but not advertised: aliases live here, not in the help table.
+ * `/model` and `/provider` predate the opencode-shaped `/models` and `/connect`
+ * and still work — muscle memory should not meet "unknown command".
+ */
+const KNOWN = new Set([
+  ...SLASH_COMMANDS.map((c) => c.name),
+  "/quit",
+  "/model",
+  "/provider",
+]);
 
 /**
  * readline completer. Tab on a partial command fills it in; anywhere else the

@@ -12,4 +12,12 @@ Rocky separates candidate generation from workspace mutation.
 
 The bearer token is stored mode `0600` under `.rocky/broker/token` when `ROCKY_BROKER_TOKEN` is absent. Logs redact forwarded credential values and common token formats. `rocky doctor` reports only presence or absence, never secret values.
 
+## Provider credentials
+
+A key registered with `/connect` (or `rocky providers login`) is written to `~/.rocky/credentials.json` at mode `0600` — never to a config file. `src/config/write.ts` refuses to serialize a value under a secret-shaped key (`apiKey`, `token`, `secret`, …), so a config file stays safe to commit or paste into an issue; only the variable *name* (`apiKeyEnv`) is ever recorded there. Wizard answers are excluded from `~/.rocky/history` and a pasted key is echoed to scrollback as `••••••••`. An environment variable named by `apiKeyEnv` takes precedence over a stored key, and `/provider remove` deletes the entry and its key together so no orphaned credential is left behind.
+
+The key is masked as it is typed: `/connect` collects it in a dialog that owns the keyboard and holds the value in a plain local, so only its length ever reaches the screen. Two limits remain: `rocky providers login` runs under a shell readline that cannot mask, and says so before echoing; and `credentials.json` is chmod-protected but not encrypted — the same posture as the broker token.
+
+The models.dev catalogue is fetched over HTTPS and cached at `~/.cache/rocky/models.json`. It carries no credentials, is never sent anything, and a failed fetch degrades to a built-in list rather than blocking.
+
 The broker trusts a valid bearer-authenticated call as originating from the configured TrueForge MCP connector. Do not expose port 8791, share its token, or remove the TrueForge approval rules.
