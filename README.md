@@ -1,12 +1,12 @@
 <div align="center">
 
 ```
-        ╭────────────────────────────────────────────────────────────────────────╮
-        │   ▄▟███▙▄     rocky v0.1.0  ♫ Amaze!                                   │
-        │  ▐███████▌    trueforge/root-agent · trueforge                         │
-        │   ▀▜███▛▀     orchestrate · ~/projects/api-server                      │
-        │   ╱╱ ┃ ╲╲     /help for commands · Esc interrupts · Ctrl-C twice exits │
-        ╰────────────────────────────────────────────────────────────────────────╯
+            ╭────────────────────────────────────────────────────────────────────────╮
+            │   ▄▟███▙▄     rocky v0.1.0  ♫ Amaze!                                   │
+            │  ▐███████▌    trueforge/root-agent · trueforge                         │
+            │   ▀▜███▛▀     orchestrate · ~/projects/api-server                      │
+            │   ╱╱ ┃ ╲╲     /help for commands · Esc interrupts · Ctrl-C twice exits │
+            ╰────────────────────────────────────────────────────────────────────────╯
 ```
 
 # Rocky
