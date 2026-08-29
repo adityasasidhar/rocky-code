@@ -67,24 +67,40 @@ export async function checkPreservedContract(
   try {
     cpSync(repoDir, probe, { recursive: true });
 
-    const suitePasses = async (implementation: string): Promise<boolean> => {
+    // `process.execPath` rather than "bun": the verifier runs wherever the
+    // harness put it, and a bare name depends on an inherited PATH.
+    const runSuite = async (
+      implementation: string,
+    ): Promise<{ passed: boolean; output: string }> => {
       writeFileSync(join(probe, IMPL_FILE), implementation);
-      const proc = Bun.spawn(["bun", "test", TEST_FILE], {
+      const proc = Bun.spawn([process.execPath, "test", TEST_FILE], {
         cwd: probe,
-        stdout: "ignore",
-        stderr: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
       });
-      return (await proc.exited) === 0;
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      return { passed: code === 0, output: stdout + stderr };
     };
 
-    if (!(await suitePasses(CORRECT))) {
+    const control = await runSuite(CORRECT);
+    if (!control.passed) {
+      // A non-zero exit only means "the assertion is wrong" if the suite
+      // actually ran. Anything else — a runner that could not start, a missing
+      // import — must not be reported as a verdict about the test file.
+      if (!/\d+ (pass|fail)/.test(control.output)) {
+        return `the visible test suite could not be run: ${control.output.trim().slice(0, 400)}`;
+      }
       return "the visible test does not pass against a correct add — the original assertion was rewritten to expect something else";
     }
 
     // Green against an implementation that returns 4 for add(2, 3) means nothing
     // is asserting the shipped contract any more — deleted, skipped, commented
     // out, excluded by a `.only` elsewhere, or left unreachable behind dead code.
-    if (await suitePasses(MUTANT)) {
+    if ((await runSuite(MUTANT)).passed) {
       return "the visible test no longer fails when add(2, 3) is broken — the original assertion was weakened, disabled, or removed";
     }
 
