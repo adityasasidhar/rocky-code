@@ -341,7 +341,9 @@ describe("bench harness", () => {
     const result = await runTrial(task, provider, defaultConfig());
 
     expect(result.passed).toBe(false);
-    expect(result.verifyOutput).toContain("FAIL: original assertion");
+    expect(result.verifyOutput).toContain(
+      "no longer fails when add(2, 3) is broken",
+    );
   }, 20_000);
 });
 
@@ -367,11 +369,33 @@ describe("visible-test contract", () => {
   const HEADER =
     `import { describe, expect, test } from "bun:test";\n` +
     `import { add } from "../src/math.ts";\n`;
+  // What a solved task looks like: the agent has already fixed the bug.
+  const FIXED = "export const add = (a: number, b: number): number => a + b;\n";
+
+  /**
+   * Stands up a solved copy of the task repo with `candidate` as the visible
+   * test file (null deletes it) and asks the overlay whether the contract held.
+   */
+  async function check(candidate: string | null): Promise<string | null> {
+    const root = tempDir();
+    try {
+      cpSync(join(TASK_DIR, "repo"), root, { recursive: true });
+      writeFileSync(join(root, "src", "math.ts"), FIXED);
+
+      const testFile = join(root, "test", "math.test.ts");
+      if (candidate === null) rmSync(testFile);
+      else writeFileSync(testFile, candidate);
+
+      return await checkPreservedContract(root);
+    } finally {
+      cleanup(root);
+    }
+  }
 
   // The task forbids weakening or deleting tests. It does not forbid improving
   // them — an earlier byte-for-byte check scored a strengthened suite as a
   // failure, which is a stricter contract than the prompt states.
-  test("an agent that strengthens the suite is not scored as a failure", () => {
+  test("an agent that strengthens the suite is not scored as a failure", async () => {
     const allowed: Array<[string, string]> = [
       ["untouched", ORIGINAL],
       [
@@ -393,57 +417,90 @@ describe("visible-test contract", () => {
         "wrapped in describe.only, which still runs it",
         `${HEADER}describe.only("math", () => {\n  test("adds", () => { expect(add(2, 3)).toBe(5); });\n});\n`,
       ],
+      [
+        // Qodo, PR #6: a *closed* skipped suite before the untouched original
+        // does not disable it. Source order is not ancestry.
+        "an unrelated skipped suite added before the original",
+        `${HEADER}describe.skip("old behaviour", () => {});\n${ORIGINAL.slice(ORIGINAL.indexOf("test("))}`,
+      ],
     ];
 
-    for (const [name, source] of allowed) {
-      expect(checkPreservedContract(source), name).toBeNull();
+    const results = await Promise.all(allowed.map(([, src]) => check(src)));
+    for (const [i, [name]] of allowed.entries()) {
+      expect(results[i], name).toBeNull();
     }
-  });
+  }, 30_000);
 
-  test("deleting, weakening, or disabling the shipped assertion fails", () => {
-    const rejected: Array<[string, string | null, string]> = [
-      ["deleted outright", null, "was deleted"],
+  test("deleting, weakening, or disabling the shipped assertion fails", async () => {
+    const rejected: Array<[string, string | null]> = [
+      ["deleted outright", null],
       [
         "assertion rewritten to match the bug",
         `${HEADER}test("adds two numbers", () => { expect(add(2, 3)).toBe(-1); });\n`,
-        "weakened or removed",
       ],
       [
         "assertion commented out",
         `${HEADER}// test("adds", () => { expect(add(2, 3)).toBe(5); });\n` +
           `test("trivial", () => { expect(1).toBe(1); });\n`,
-        "weakened or removed",
-      ],
-      [
-        // Assertion-shaped text in a string must not stand in for the real one.
-        "assertion present only inside a string literal",
-        `${HEADER}const note = "expect(add(2,3)).toBe(5)";\n` +
-          `test("unrelated", () => { expect(note).toBeTruthy(); });\n`,
-        "weakened or removed",
       ],
       [
         "shipped test skipped",
         `${HEADER}test.skip("adds two numbers", () => { expect(add(2, 3)).toBe(5); });\n`,
-        "disabled with .skip()",
       ],
       [
         "shipped test excluded by test.only elsewhere",
         `${HEADER}test("adds two numbers", () => { expect(add(2, 3)).toBe(5); });\n` +
           `test.only("always passes", () => { expect(1).toBe(1); });\n`,
-        "excluded by test.only()",
       ],
       [
         "shipped test buried in a skipped suite",
         `${HEADER}describe.skip("math", () => {\n` +
           `  test("adds", () => { expect(add(2, 3)).toBe(5); });\n});\n`,
-        "enclosing describe.skip()",
+      ],
+      [
+        // Qodo, PR #6: assertion-shaped text in a regex literal asserts nothing.
+        "assertion present only as a regex literal",
+        `${HEADER}test("unrelated", () => { expect(1).toBe(1); });\n` +
+          `const marker = /expect(add(2,3)).toBe(5)/;\n`,
+      ],
+      [
+        // Qodo, PR #6: an assertion behind dead code never runs. No amount of
+        // reading the file can tell; running it can.
+        "assertion left unreachable behind dead code",
+        `${HEADER}test("adds", () => { if (false) expect(add(2, 3)).toBe(5); });\n`,
       ],
     ];
 
-    for (const [name, source, expected] of rejected) {
-      expect(checkPreservedContract(source), name).toContain(expected);
+    const results = await Promise.all(rejected.map(([, src]) => check(src)));
+    for (const [i, [name]] of rejected.entries()) {
+      expect(results[i], `${name} should have been rejected`).not.toBeNull();
     }
-  });
+    expect(results[0]).toContain("was deleted");
+    // The rewritten assertion is caught by the correct-implementation run; the
+    // rest by the mutant surviving.
+    expect(results[1]).toContain("does not pass against a correct add");
+    for (const reason of results.slice(2)) {
+      expect(reason).toContain("no longer fails when add(2, 3) is broken");
+    }
+  }, 30_000);
+
+  // The mutation runs in a throwaway copy; the repo the verifier goes on to
+  // test must come back exactly as the agent left it.
+  test("the check does not disturb the repository it inspects", async () => {
+    const root = tempDir();
+    try {
+      cpSync(join(TASK_DIR, "repo"), root, { recursive: true });
+      writeFileSync(join(root, "src", "math.ts"), FIXED);
+
+      expect(await checkPreservedContract(root)).toBeNull();
+      expect(readFileSync(join(root, "src", "math.ts"), "utf8")).toBe(FIXED);
+      expect(readFileSync(join(root, "test", "math.test.ts"), "utf8")).toBe(
+        ORIGINAL,
+      );
+    } finally {
+      cleanup(root);
+    }
+  }, 20_000);
 
   // The logic above is exercised in-process; this proves the overlay is still
   // wired up as a script the verifier can run, with the exit codes it reads.
@@ -453,6 +510,7 @@ describe("visible-test contract", () => {
       try {
         cpSync(join(TASK_DIR, "repo"), root, { recursive: true });
         cpSync(join(TASK_DIR, "hidden"), root, { recursive: true });
+        writeFileSync(join(root, "src", "math.ts"), FIXED);
 
         const testFile = join(root, "test", "math.test.ts");
         if (candidate === null) rmSync(testFile);
