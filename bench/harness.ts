@@ -32,6 +32,8 @@ import { builtinTools, makeRegistry } from "../src/tools/index.ts";
 const DEFAULT_TRIAL_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_VERIFY_TIMEOUT_MS = 2 * 60_000;
 const DEFAULT_VERIFY_OUTPUT_BYTES = 128 * 1024;
+/** How long a terminating verifier group keeps SIGTERM before it is SIGKILLed. */
+const TERM_GRACE_MS = 2_000;
 const PATH_TOOLS = new Set([
   "read_file",
   "write_file",
@@ -275,6 +277,7 @@ async function verify(
   let aborted = false;
   let terminating = false;
   let escalation: ReturnType<typeof setTimeout> | undefined;
+  let escalationDeadline = 0;
 
   const signalGroup = (childSignal: NodeJS.Signals) => {
     try {
@@ -287,11 +290,21 @@ async function verify(
       }
     }
   };
+  /** Whether any member of the detached group is still alive. */
+  const groupAlive = (): boolean => {
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const terminate = () => {
     if (terminating) return;
     terminating = true;
     signalGroup("SIGTERM");
-    escalation = setTimeout(() => signalGroup("SIGKILL"), 2_000);
+    escalationDeadline = Date.now() + TERM_GRACE_MS;
+    escalation = setTimeout(() => signalGroup("SIGKILL"), TERM_GRACE_MS);
     escalation.unref?.();
   };
   const timer = setTimeout(() => {
@@ -337,7 +350,24 @@ async function verify(
     };
   } finally {
     clearTimeout(timer);
-    if (escalation) clearTimeout(escalation);
+    // The awaited promises above resolve once the group *leader* exits and its
+    // pipes close. A descendant that ignores SIGTERM and redirects the pipes it
+    // inherited satisfies both conditions while still running, so simply
+    // cancelling the pending escalation would let it outlive the trial and the
+    // temporary repository `runTrial` removes as soon as this returns.
+    //
+    // Finish the escalation here instead of cancelling it. The group id stays
+    // valid for surviving members after the leader is reaped, so a `signal 0`
+    // probe distinguishes "nothing survived" — the overwhelmingly common case,
+    // which costs one syscall and no delay — from a genuine survivor. Only for
+    // a survivor do we wait out whatever remains of the grace period, so a
+    // descendant still shutting down cleanly is never killed early.
+    if (terminating) {
+      const remaining = escalationDeadline - Date.now();
+      if (remaining > 0 && groupAlive()) await Bun.sleep(remaining);
+      if (escalation) clearTimeout(escalation);
+      if (groupAlive()) signalGroup("SIGKILL");
+    }
     signal.removeEventListener("abort", onAbort);
   }
 }

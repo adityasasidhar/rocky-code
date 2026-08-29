@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import {
   loadTask,
@@ -160,6 +166,73 @@ describe("bench harness", () => {
 
       expect(result.passed).toBe(false);
       expect(result.verifyOutput).toContain("Verifier timed out");
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test("a SIGTERM-ignoring descendant does not outlive the verifier", async () => {
+    const root = tempDir();
+    try {
+      const pidFile = join(root, "survivor.pid");
+      // The descendant releases the pipes it inherited and ignores SIGTERM, so
+      // the leader's exit closes stdout/stderr and resolves every promise the
+      // verifier awaits while this process is still running. Only a sweep of
+      // the whole group reaps it.
+      //
+      // The redirection lives in a script rather than the verify command so the
+      // command the harness executes stays free of shell metacharacters.
+      const task = makeTask(root, "bash survivor.sh & sleep 30");
+      writeFileSync(
+        join(task.repoDir, "survivor.sh"),
+        ['trap "" TERM', "exec >/dev/null 2>&1", `echo $$ > ${pidFile}`, "sleep 200", ""].join(
+          "\n",
+        ),
+      );
+      const provider = new MockProvider([
+        { content: [text("done")], stopReason: "end_turn" },
+      ]);
+
+      const result = await runTrial(task, provider, defaultConfig(), undefined, {
+        trialTimeoutMs: 15_000,
+        verifyTimeoutMs: 800,
+      });
+      expect(result.verifyOutput).toContain("Verifier timed out");
+
+      // The descendant records its pid asynchronously, so the file may not
+      // exist the instant the trial returns. Waiting here keeps a slow start
+      // from being reported as a cleanup failure.
+      let recorded = "";
+      for (let i = 0; i < 100 && !recorded; i++) {
+        try {
+          recorded = readFileSync(pidFile, "utf8").trim();
+        } catch {
+          await Bun.sleep(25);
+        }
+      }
+      expect(recorded).not.toBe("");
+      const survivor = Number(recorded);
+      expect(Number.isInteger(survivor)).toBe(true);
+
+      const alive = () => {
+        try {
+          process.kill(survivor, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      // SIGKILL is asynchronous; give the kernel a moment to reap it.
+      for (let i = 0; i < 40 && alive(); i++) await Bun.sleep(25);
+      const escaped = alive();
+      if (escaped) {
+        try {
+          process.kill(survivor, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+      expect(escaped).toBe(false);
     } finally {
       cleanup(root);
     }
