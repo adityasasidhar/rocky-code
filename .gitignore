@@ -2,3 +2,4 @@ node_modules/
 .rocky/
 .env*
 *.log
+.rocky
