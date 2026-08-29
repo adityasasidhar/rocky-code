@@ -2,7 +2,7 @@
 
 ```
             ╭────────────────────────────────────────────────────────────────────────╮
-            │   ▄▟███▙▄     rocky v0.1.0  ♫ Amaze!                                   │
+            │   ▄▟███▙▄     rocky v0.1.0  ♫ Amaze! Amaze!                            │
             │  ▐███████▌    trueforge/root-agent · trueforge                         │
             │   ▀▜███▛▀     orchestrate · ~/projects/api-server                      │
             │   ╱╱ ┃ ╲╲     /help for commands · Esc interrupts · Ctrl-C twice exits │
