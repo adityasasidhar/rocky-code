@@ -18,7 +18,7 @@ in sealed containers that have never seen your checkout, and refuses to believe 
 word they say until TrueForge has proved it in a sandbox and you have said yes.
 
 [![CI](https://github.com/adityasasidhar/rocky-code/actions/workflows/ci.yml/badge.svg)](https://github.com/adityasasidhar/rocky-code/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-773%20passing-2ea043)](#verification)
+[![tests](https://img.shields.io/badge/tests-783%20passing-2ea043)](#verification)
 [![typecheck](https://img.shields.io/badge/tsc-strict%20%C2%B7%20clean-2ea043)](#verification)
 [![runtime](https://img.shields.io/badge/runtime-Bun%201.4-f472b6)](https://bun.sh)
 [![harness](https://img.shields.io/badge/harness-TrueForge%200.1.x-6366f1)](https://github.com/truefoundry/trueforge)
@@ -278,7 +278,7 @@ these tags.
 
 ```bash
 bunx tsc --noEmit   # strict, plus noUnusedLocals/Parameters/UncheckedIndexedAccess
-bun test            # 773 pass · 1 skip · 0 fail · 44 files · ~3.5s
+bun test            # 783 pass · 1 skip · 0 fail · 44 files · ~6.5s
 ```
 
 CI runs both on every PR, plus the container isolation fixture and a gitleaks
@@ -312,10 +312,12 @@ as security-critical.
 
 | PR | Change | Qodo verdict |
 |---|---|---|
-| [#1](https://github.com/adityasasidhar/rocky-code/pull/1) | `fix: restore benchmark and quality gates` | 6 findings — 4 resolved in-PR, 2 open (see below) |
+| [#1](https://github.com/adityasasidhar/rocky-code/pull/1) | `fix: restore benchmark and quality gates` | 6 findings — 4 resolved in-PR, 1 fixed in #5, 1 in #6 |
 | [#2](https://github.com/adityasasidhar/rocky-code/pull/2) | `feat: harden TrueForge session recovery` | 6 findings — 5 resolved in-PR (incl. **1 High**), 1 carried into #3 |
 | [#3](https://github.com/adityasasidhar/rocky-code/pull/3) | `fix: honor Rocky memory precedence` | ✅ *"Great, no issues found"* |
 | [#4](https://github.com/adityasasidhar/rocky-code/pull/4) | agent-instruction corrections | Documentation — describe only |
+| [#5](https://github.com/adityasasidhar/rocky-code/pull/5) | `fix: reap verifier descendants that ignore SIGTERM` | 3 findings raised on the fix itself, all resolved — re-review clean |
+| [#6](https://github.com/adityasasidhar/rocky-code/pull/6) | `fix: judge the visible test contract by execution` | Closes the last finding from #1 — then 12 findings across four reviews of the fix itself, all resolved |
 
 **Findings that changed the code.** Each maps to a commit:
 
@@ -323,6 +325,7 @@ as security-critical.
 |---|---|---|
 | Drops mixed approval actions — an MCP action arriving alongside `tool.approval_required` returned early, stranding the approval and wedging the turn | **High** | [`6c8b489`](https://github.com/adityasasidhar/rocky-code/commit/6c8b489) |
 | Trials have no deadline · verifier execution unbounded | **High** | [`2d2a566`](https://github.com/adityasasidhar/rocky-code/commit/2d2a566) |
+| Verifier descendants survive cleanup — a descendant that ignores `SIGTERM` and releases its inherited pipes outlived the cancelled SIGKILL escalation | **High** | [#5](https://github.com/adityasasidhar/rocky-code/pull/5) |
 | Hidden bench overlays remained agent-readable | Medium | [`2d2a566`](https://github.com/adityasasidhar/rocky-code/commit/2d2a566) |
 | Deleted tests still scored as passing | Medium | [`2d2a566`](https://github.com/adityasasidhar/rocky-code/commit/2d2a566) |
 | `extraSystem` exceeds the 24 KB cap on multi-byte input | Medium | [`eed4faa`](https://github.com/adityasasidhar/rocky-code/commit/eed4faa) |
@@ -330,19 +333,85 @@ as security-critical.
 | Replay buffers unbounded history | Medium | [`d892556`](https://github.com/adityasasidhar/rocky-code/commit/d892556) |
 | Oversized memory copied before truncation | Medium | [`43e934f`](https://github.com/adityasasidhar/rocky-code/commit/43e934f) |
 | Empty `ROCKY.md` incorrectly fell through to `AGENTS.md` | Medium | [`d845856`](https://github.com/adityasasidhar/rocky-code/commit/d845856) |
+| Valid test additions fail — the bench judge demanded a byte-for-byte identical test file, so an agent that *strengthened* the suite scored as failing | Medium | [#6](https://github.com/adityasasidhar/rocky-code/pull/6) |
 
-The `ROCKY.md` finding is the one worth reading twice: Qodo caught a precedence
-bug where an intentionally-empty memory file silently fell back to a different
-file, which would have let a user believe they had disabled project memory when
-they had not. It became its own PR — and that PR came back clean.
+Three are worth reading twice. The **`ROCKY.md`** finding was a precedence bug
+where an intentionally-empty memory file silently fell back to a different file,
+which would have let a user believe they had disabled project memory when they
+had not. It became its own PR — and that PR came back clean.
 
-**Findings still open.** Both are confined to `bench/`, the offline benchmark
-harness. Neither is reachable from the agent, the broker, or any workspace path:
+**"Verifier descendants survive cleanup"** was subtler, and the review of the
+*fix* is the more interesting artifact. The verifier awaited the process-group
+leader and its two pipes, then cancelled the pending SIGKILL — but a descendant
+that ignores SIGTERM and releases its inherited pipes satisfies all three
+conditions while still running, so it escaped the trial. Qodo then found three
+issues in the first fix, including that the replacement sweep could fire *before*
+the two-second SIGTERM grace had elapsed, killing a descendant that was shutting
+down cleanly. The landed version probes the group with `signal 0` first: nothing
+survived costs one syscall and no delay, and only a real survivor waits out the
+remaining grace. Re-review came back clean.
 
-| Qodo finding | Severity | Status |
-|---|---|---|
-| Verifier descendants survive cleanup — a descendant that ignores `SIGTERM` and redirects its inherited pipes outlives the SIGKILL escalation cleared in `verify()` | **High** | Fixed in [#5](https://github.com/adityasasidhar/rocky-code/pull/5), with a regression test that fails without it |
-| Valid test additions fail | Medium | Open — under review |
+The last one to close is the one where Qodo judged the judge. The bench's own
+acceptance check demanded the visible test file come back byte-for-byte
+identical, so an agent that fixed the bug *and added a test* was scored as having
+failed — the check was stricter than the contract it was enforcing.
+
+The first fix read the file more cleverly: strip comments and strings, then look
+for the shipped assertion still registered as an active test. Qodo found three
+holes in it, and the third was that a *closed* `describe.skip` before the
+untouched original was treated as enclosing it — recreating the exact bug the fix
+existed to remove. The second, though, was the one that mattered:
+`test("adds", () => { if (false) expect(add(2, 3)).toBe(5); })` is textually
+indistinguishable from a live assertion. No parser settles that. Whether an
+assertion still enforces anything is a question about execution.
+
+So the check stopped reading and started running — the same move the rest of the
+harness makes. It replaces the implementation with a mutant that is correct for
+every input **except** the one the shipped test pins, and requires the visible
+suite to notice:
+
+```ts
+const MUTANT = `export const add = (a: number, b: number): number => {
+  if (a === 2 && b === 3) return 4;
+  return a + b;
+};`;
+```
+
+The contract holds when the suite passes against a correct `add`, reaches the
+same verdict whether or not the runner thinks it is on CI, and fails against that
+mutant. All three are load-bearing: the first alone accepts a test that asserts
+nothing; the third alone accepts an assertion rewritten to expect the wrong
+answer, because that fails too; and the second rules out a suite whose result
+depends on where it runs — which is what `.only` produces, since Bun fails any
+run containing a focused test once it detects CI.
+
+Qodo then reviewed *that* fix, and the one after it — four rounds, twelve more
+findings, two of which were the kind you want caught before a demo:
+
+- **The probe could write outside itself.** `cpSync` recreates symlinks and
+  `writeFileSync` follows them, so a repository whose `src/math.ts` was a link
+  could have steered the write into the workspace the check exists to leave
+  alone. The copy now drops symlinks; a test puts a bystander file outside the
+  repo, points a symlink at it, and asserts it comes back untouched.
+- **The judge leaked to the judged.** The verifier runs with the hidden overlay
+  copied into the repo root, and the probe copied the repo wholesale — so the
+  agent's own test file ran in a tree containing `preserve_test.ts` and could
+  have read the judge and answered to it. That defeats the premise the bench
+  rests on. The copy now drops the overlay, and a test asserts the candidate
+  cannot see it while the verifier still can.
+
+The rest hardened the same surface: output is capped so a noisy test cannot
+exhaust the checker, each run gets its own copy so a test cannot pass once and
+fail after, a file that throws at load is reported as unrunnable rather than as a
+rewritten assertion, and the two implementations now differ by a single character
+so nothing can tell them apart without actually calling `add`.
+
+Added tests, comments, renames and reformatting all pass; deletion, rewriting,
+`.skip`, `.only`, an assertion hidden in a regex literal, and one stranded behind
+dead code all fail. A claim about a test is not evidence about a test — one level
+further down than the rest of the project applies the same rule.
+
+**No Qodo findings remain open.**
 
 ---
 

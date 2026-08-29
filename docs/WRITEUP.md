@@ -75,8 +75,8 @@ attempt with the failing output attached as evidence.
 **Keeping the loop pure.** `src/core/loop.ts` does no I/O, holds no globals, and
 never throws for tool failures. Every `tool_use` yields exactly one `tool_result`;
 handler throws are caught and converted to `is_error: true`. Errors are data. This
-is what makes the loop testable without a live model, and it is why 775 tests run
-in about four seconds.
+is what makes the loop testable without a live model, and it is why 784 tests run
+in about six and a half seconds.
 
 **Not giving Rocky's own source an exemption.** When Rocky patches Rocky, the
 patch crosses the same sandbox, the same approval, and the same checkpoint — and
@@ -110,16 +110,54 @@ Qodo findings that changed the code — each maps to a commit:
 | Replay buffers unbounded history | Medium | `d892556` |
 | Oversized memory copied before truncation | Medium | `43e934f` |
 | Empty `ROCKY.md` fell through to `AGENTS.md` | Medium | `d845856` |
+| Valid test additions fail — the bench judge required a byte-identical test file | Medium | [#6](https://github.com/adityasasidhar/rocky-code/pull/6) |
 
-Two are worth reading twice. **"Empty `ROCKY.md` falls back"** was a precedence bug
+Three are worth reading twice. **"Empty `ROCKY.md` falls back"** was a precedence bug
 where an intentionally-empty memory file silently deferred to a different file —
 a user would believe they had disabled project memory when they had not. It became
 its own PR, and that PR came back clean. **"Verifier descendants survive cleanup"**
-was subtler: the bench verifier awaited the process-group leader and its two
-pipes, then cancelled the pending SIGKILL — but a descendant that ignores SIGTERM
-and redirects its inherited pipes satisfies all three conditions while still
-running, so it escaped the trial. The fix sweeps the group in the same `finally`,
-and the regression test fails without it.
+was subtler, and the review of the *fix* is the better artifact. The bench
+verifier awaited the process-group leader and its two pipes, then cancelled the
+pending SIGKILL — but a descendant that ignores SIGTERM and releases its
+inherited pipes satisfies all three conditions while still running, so it escaped
+the trial and the temporary repository teardown. Qodo then found three issues in
+the first fix, the sharpest being that the replacement sweep could fire *before*
+the two-second SIGTERM grace elapsed, killing a descendant that was shutting down
+cleanly. The landed version probes the group with `signal 0` first — nothing
+survived costs one syscall and no delay; only a real survivor waits out the
+remaining grace — and the regression test fails without it. Re-review clean.
+
+The last finding to close was the one where Qodo judged the judge. The bench's
+own acceptance check demanded the visible test file come back byte-for-byte
+identical, so an agent that fixed the bug *and added a test* scored as failing —
+the benchmark was partly measuring compliance with a rule the task never stated.
+The first fix just read the file more cleverly, and Qodo put three holes in it;
+the one that mattered was that `if (false) expect(add(2, 3)).toBe(5)` is
+textually indistinguishable from a live assertion. No parser settles that —
+whether an assertion still enforces anything is a question about execution.
+
+So the check stopped reading and started running. It swaps in an implementation
+correct for every input except the one the shipped test pins, and requires the
+visible suite to notice: the contract holds when the suite passes against a
+correct `add`, reaches the same verdict whether or not the runner thinks it is on
+CI, and fails against the mutant. All three are load-bearing — the first alone
+accepts a test that asserts nothing, the third alone accepts an assertion
+rewritten to expect the wrong answer, and the second rules out a suite whose
+result depends on where it runs.
+
+Qodo then reviewed that fix, and the one after it — four rounds and twelve more
+findings. Two were the kind worth catching: the probe copied symlinks and then
+wrote through one, so a repository whose `src/math.ts` was a link could have
+redirected the write into the workspace the check exists to protect; and the
+probe copied the repo wholesale, so the agent's own test code ran in a tree
+containing the hidden overlay and could have read the judge and answered to it.
+The first is the same class of bug the threat model already takes seriously about
+the agent's file tools; the second defeats the premise the benchmark rests on.
+Both were in the judge, not the agent.
+
+That is the project's thesis applied one level down: a claim about a test is not
+evidence about a test, and the thing doing the judging gets audited on the same
+terms as the thing being judged. No findings remain open.
 
 Beyond review, CI gates every PR on `bunx tsc --noEmit` (strict, plus
 `noUnusedLocals` / `noUnusedParameters` / `noUncheckedIndexedAccess`), the full
@@ -135,7 +173,7 @@ verification decides the score rather than the agent's account of itself.
 
 - **Complete and verified:** the agent loop, tools, permissions, context
   management, TUI, providers, broker, adapters, recovery policy, snapshot/patch
-  pipeline, and the bench harness. 775 tests, typecheck clean. `DESIGN.md` records
+  pipeline, and the bench harness. 783 tests passing, typecheck clean. `DESIGN.md` records
   live-validation transcripts against real models for the local backend, including
   the bugs those runs found.
 - **Complete, pending live validation:** the TrueForge orchestration path is
