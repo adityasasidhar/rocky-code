@@ -128,6 +128,78 @@ function approvalPreview(root: string, name: string, args: string): string | und
   }
 }
 
+const THINK_OPEN = "<think>";
+const THINK_CLOSE = "</think>";
+
+/** A `<think>`-tagged span and the visible text around it, in arrival order. */
+export interface ThinkSegment {
+  kind: "text" | "thinking";
+  text: string;
+}
+
+/**
+ * Splits inline `<think>…</think>` reasoning out of streamed message content.
+ *
+ * TrueForge reports reasoning in its own `reasoningContent` field for providers
+ * that separate it, but a model reached through an OpenAI-compatible `custom`
+ * provider (MiniMax-M3, most local reasoning models) emits the tags inline in
+ * `content` instead, and nothing upstream strips them. Left alone they render
+ * as literal text and, worse, land in `-p` stdout, which is the answer meant to
+ * be piped somewhere.
+ *
+ * Deltas arrive mid-tag, so a chunk ending in `"…done.</thi"` must not be
+ * emitted yet. Anything that could still become a tag is held back until the
+ * next chunk decides it; `flush()` releases the remainder at message end,
+ * because a partial tag that never completes was ordinary text all along.
+ */
+export class ThinkTagFilter {
+  private inside = false;
+  private held = "";
+
+  push(chunk: string): ThinkSegment[] {
+    const segments: ThinkSegment[] = [];
+    let buffer = this.held + chunk;
+    this.held = "";
+
+    while (buffer.length > 0) {
+      const tag = this.inside ? THINK_CLOSE : THINK_OPEN;
+      const at = buffer.indexOf(tag);
+      if (at >= 0) {
+        const before = buffer.slice(0, at);
+        if (before) segments.push({ kind: this.inside ? "thinking" : "text", text: before });
+        buffer = buffer.slice(at + tag.length);
+        this.inside = !this.inside;
+        continue;
+      }
+      // No complete tag. Hold back only a suffix that could still become one,
+      // so ordinary text streams without waiting on the next chunk.
+      const keep = partialTagSuffix(buffer, tag);
+      const emit = buffer.slice(0, buffer.length - keep);
+      if (emit) segments.push({ kind: this.inside ? "thinking" : "text", text: emit });
+      this.held = buffer.slice(buffer.length - keep);
+      break;
+    }
+    return segments;
+  }
+
+  /** Release whatever was held back, treating an unfinished tag as text. */
+  flush(): ThinkSegment[] {
+    if (!this.held) return [];
+    const text = this.held;
+    this.held = "";
+    return [{ kind: this.inside ? "thinking" : "text", text }];
+  }
+}
+
+/** Length of the longest suffix of `buffer` that is a proper prefix of `tag`. */
+function partialTagSuffix(buffer: string, tag: string): number {
+  const max = Math.min(buffer.length, tag.length - 1);
+  for (let len = max; len > 0; len--) {
+    if (tag.startsWith(buffer.slice(buffer.length - len))) return len;
+  }
+  return 0;
+}
+
 export class TrueForgeBackend implements AgentBackend {
   readonly kind = "trueforge" as const;
   readonly displayName = "TrueForge";
@@ -141,6 +213,8 @@ export class TrueForgeBackend implements AgentBackend {
   private deferredActionInputs: TrueForgeApi.TurnInputItem[] = [];
   private readonly toolNames = new Map<string, { name: string; summary: string; preview?: string }>();
   private readonly threadDepths = new Map<string, number>();
+  /** Per-message `<think>` split state; deltas can cut a tag in half. */
+  private readonly thinkFilters = new Map<string, ThinkTagFilter>();
   private brokerEndpoint: { url: string; token: string } | undefined;
   private brokerRegistered = false;
 
@@ -282,6 +356,30 @@ export class TrueForgeBackend implements AgentBackend {
     };
   }
 
+  private toLoopEvents(segments: ThinkSegment[], depth: number | undefined): LoopEvent[] {
+    return segments.map((segment) => ({
+      type: segment.kind === "thinking" ? ("thinking_delta" as const) : ("text_delta" as const),
+      text: segment.text,
+      ...(depth ? { depth } : {}),
+    }));
+  }
+
+  private splitThinking(id: string, content: string, depth: number | undefined): LoopEvent[] {
+    let filter = this.thinkFilters.get(id);
+    if (!filter) {
+      filter = new ThinkTagFilter();
+      this.thinkFilters.set(id, filter);
+    }
+    return this.toLoopEvents(filter.push(content), depth);
+  }
+
+  private flushThinking(id: string, depth: number | undefined): LoopEvent[] {
+    const filter = this.thinkFilters.get(id);
+    if (!filter) return [];
+    this.thinkFilters.delete(id);
+    return this.toLoopEvents(filter.flush(), depth);
+  }
+
   mapEvent(event: TrueForgeApi.TurnStreamingEvent, replay = false): LoopEvent[] {
     const depth =
       "threadId" in event && event.threadId && event.threadId !== "main"
@@ -332,7 +430,7 @@ export class TrueForgeBackend implements AgentBackend {
       case "model.message.delta": {
         const events: LoopEvent[] = [];
         if (event.reasoningContent) events.push({ type: "thinking_delta", text: event.reasoningContent, ...(depth ? { depth } : {}) });
-        if (event.content) events.push({ type: "text_delta", text: event.content, ...(depth ? { depth } : {}) });
+        if (event.content) events.push(...this.splitThinking(event.id, event.content, depth));
         if (event.refusal) events.push({ type: "text_delta", text: event.refusal, ...(depth ? { depth } : {}) });
         return events;
       }
@@ -350,9 +448,12 @@ export class TrueForgeBackend implements AgentBackend {
         if (replay) {
           if (event.reasoningContent) events.push({ type: "thinking_delta", text: event.reasoningContent, ...(depth ? { depth } : {}) });
           const content = textContent(event.content);
-          if (content) events.push({ type: "text_delta", text: content, ...(depth ? { depth } : {}) });
+          if (content) events.push(...this.splitThinking(event.id, content, depth));
           if (event.refusal) events.push({ type: "text_delta", text: event.refusal, ...(depth ? { depth } : {}) });
         }
+        // The message is terminal for this id: release any held partial tag and
+        // drop the filter so a long session does not accumulate them.
+        events.push(...this.flushThinking(event.id, depth));
         return events;
       }
       case "tool.response": {

@@ -2,7 +2,10 @@
 
 ## Before recording
 
-- Run TrueForge locally on port 8790 with a model and Daytona configured.
+- Run TrueForge locally: `npx @truefoundry/trueforge@latest` (serves port 8790).
+- In its UI: **Settings → Models** (provider + key; note the FQN is `provider/name`,
+  e.g. `openai/gpt-5-4-mini`) and **Settings → Sandbox providers** (Daytona + API key).
+  Without the sandbox provider every snapshot-carrying turn fails — confirm with `rocky doctor`.
 - Build at least two pinned worker images and enable them in `.rocky/config.json`.
 - Use a small owned fixture repository and a deterministic failing test.
 - Run `bun test` and `bunx tsc --noEmit` in Rocky itself.

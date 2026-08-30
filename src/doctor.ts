@@ -32,6 +32,47 @@ async function endpoint(url: string, headers?: Record<string, string>): Promise<
   }
 }
 
+/**
+ * A sandbox the agent spec merely *requests* is not a sandbox TrueForge can
+ * provide. Reporting `config.trueforge.sandbox` back to the user was a check
+ * that could not fail: it went green while `GET /settings/sandbox-providers`
+ * answered 404, and the first turn carrying a workspace snapshot then died on
+ * an opaque 500 (TrueForge returns a clean 422 only when the spec disables the
+ * sandbox). Ask the server instead.
+ */
+async function sandboxProvider(
+  config: Config,
+  headers: Record<string, string> | undefined,
+): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const response = await fetch(
+      new URL("/api/v1/settings/sandbox-providers", config.trueforge.baseUrl).toString(),
+      { headers, signal: AbortSignal.timeout(3_000) },
+    );
+    if (response.status === 404) {
+      return {
+        ok: false,
+        detail: "no sandbox provider configured — add a Daytona API key in TrueForge Settings → Sandbox providers",
+      };
+    }
+    if (!response.ok) return { ok: false, detail: `${response.status} ${response.statusText}`.trim() };
+    // A stored key is not yet a usable sandbox: TrueForge builds the sandbox
+    // image on save, and a turn cannot run until that reaches `ready`.
+    const body = (await response.json()) as {
+      data?: { manifest?: { type?: unknown }; status?: unknown; status_reason?: unknown };
+    };
+    const type =
+      typeof body.data?.manifest?.type === "string" ? body.data.manifest.type : "sandbox provider";
+    const status = typeof body.data?.status === "string" ? body.data.status : "unknown";
+    const reason = typeof body.data?.status_reason === "string" ? body.data.status_reason : "";
+    return status === "ready"
+      ? { ok: true, detail: `${type} · image ready` }
+      : { ok: false, detail: `${type} · image ${status}${reason ? ` — ${reason}` : ""}` };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function doctor(root: string, config: Config): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   const trueForgeToken = process.env[config.trueforge.tokenEnv];
@@ -48,9 +89,17 @@ export async function doctor(root: string, config: Config): Promise<DoctorCheck[
   });
   checks.push({
     name: "Daytona sandbox",
-    ok: config.trueforge.sandbox,
-    detail: config.trueforge.sandbox ? "enabled in the TrueForge agent spec" : "disabled",
-    required: config.backend === "trueforge",
+    ...(!config.trueforge.sandbox
+      ? { ok: true, detail: "disabled in the TrueForge agent spec" }
+      : trueforge.ok
+        ? await sandboxProvider(
+            config,
+            trueForgeToken ? { authorization: `Bearer ${trueForgeToken}` } : undefined,
+          )
+        : { ok: false, detail: "requested, but TrueForge is unreachable" }),
+    // A snapshot-carrying turn cannot run without it, so this is fatal exactly
+    // when the agent spec asks for a sandbox.
+    required: config.backend === "trueforge" && config.trueforge.sandbox,
   });
 
   // The provider only drives the local loop, so a missing key is required-fatal
