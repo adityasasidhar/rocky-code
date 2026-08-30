@@ -75,8 +75,8 @@ attempt with the failing output attached as evidence.
 **Keeping the loop pure.** `src/core/loop.ts` does no I/O, holds no globals, and
 never throws for tool failures. Every `tool_use` yields exactly one `tool_result`;
 handler throws are caught and converted to `is_error: true`. Errors are data. This
-is what makes the loop testable without a live model, and it is why 784 tests run
-in about six and a half seconds.
+is what makes the loop testable without a live model, and it is why 961 tests run
+in about seven seconds.
 
 **Not giving Rocky's own source an exemption.** When Rocky patches Rocky, the
 patch crosses the same sandbox, the same approval, and the same checkpoint — and
@@ -173,14 +173,22 @@ verification decides the score rather than the agent's account of itself.
 
 - **Complete and verified:** the agent loop, tools, permissions, context
   management, TUI, providers, broker, adapters, recovery policy, snapshot/patch
-  pipeline, and the bench harness. 783 tests passing, typecheck clean. `DESIGN.md` records
+  pipeline, and the bench harness. 961 tests passing, typecheck clean. `DESIGN.md` records
   live-validation transcripts against real models for the local backend, including
   the bugs those runs found.
-- **Complete, pending live validation:** the TrueForge orchestration path is
-  implemented and unit-tested end to end (SDK event mapping, approvals, resume
-  cursors, MCP auth). Validation against a running TrueForge + Daytona
-  deployment is in progress and is what the demo recording captures; the local
-  backend is the path with published live transcripts today.
+- **Verified live against a running TrueForge:** against `npx
+  @truefoundry/trueforge@latest` on `:8790`, `doctor` reports the harness
+  healthy, the root model FQN resolves from the server's own configured-model
+  list, the broker registers over MCP and comes back `authenticated`, sessions
+  create against an inline agent spec, and turns stream back over SSE.
+- **Blocked on one external credential:** a Daytona API key, configured in
+  TrueForge under *Settings → Sandbox providers*. Rocky attaches the workspace
+  snapshot as a file on the first turn of a session, and TrueForge materializes
+  attachments in the sandbox — so with no sandbox provider that turn fails
+  rather than degrading. That is a genuine dependency, not a workaround gap: the
+  sandbox is what the design puts between a worker's claim and the checkout.
+  `doctor` names it as a failing required check rather than reporting the agent
+  spec's own `sandbox: true` back at you, which is what it used to do.
 - **Pre-existing work:** Rocky's original local provider loop and terminal UI
   predate the hackathon. Hackathon-period work is the TrueForge backend, SSE
   normalization and reconnect, the worker broker and adapters, sanitized

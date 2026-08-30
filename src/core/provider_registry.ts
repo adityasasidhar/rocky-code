@@ -19,6 +19,7 @@ import {
   writeCredential,
   type KeySource,
 } from "../config/credentials.ts";
+import { withFileLock } from "../config/atomic.ts";
 import { draftToEntry, type ProviderDraft } from "../config/providers.ts";
 import { globalConfigPath, updateGlobalConfig } from "../config/write.ts";
 import { createProvider } from "./provider/index.ts";
@@ -29,6 +30,12 @@ export type RegistryPaths = {
   credentials?: string;
 };
 
+/** Registration options in addition to injectable paths for tests. */
+export type RegisterOptions = RegistryPaths & {
+  /** The user selected env auth (or left the key blank), replacing an old key. */
+  clearStoredCredential?: boolean;
+};
+
 const paths = (opts: RegistryPaths = {}) => ({
   config: opts.config ?? globalConfigPath(),
   credentials: opts.credentials ?? credentialsPath(),
@@ -36,6 +43,16 @@ const paths = (opts: RegistryPaths = {}) => ({
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * Credential and config changes form one user-visible operation. The per-file
+ * locks protect their individual read-modify-writes; this deterministic outer
+ * lock keeps registration, removal, and rollback from interleaving between the
+ * two files.
+ */
+function withRegistryTransaction<T>(p: ReturnType<typeof paths>, fn: () => T): T {
+  return withFileLock(`${p.config}.providers-transaction`, fn);
+}
 
 export type RegisterResult = {
   /** Where the registry entry landed, so the user can go edit it. */
@@ -57,27 +74,30 @@ export type RegisterResult = {
 export function registerProvider(
   draft: ProviderDraft,
   secret?: string,
-  opts: RegistryPaths = {},
+  opts: RegisterOptions = {},
 ): RegisterResult {
   const p = paths(opts);
   const stored = secret !== undefined && secret !== "";
 
-  const previousKey = stored ? readCredential(draft.name, p.credentials) : undefined;
-  if (stored) writeCredential(draft.name, secret, p.credentials);
+  return withRegistryTransaction(p, () => {
+    const previousKey = stored || opts.clearStoredCredential ? readCredential(draft.name, p.credentials) : undefined;
+    if (stored) writeCredential(draft.name, secret, p.credentials);
+    else if (opts.clearStoredCredential) deleteCredential(draft.name, p.credentials);
 
-  let configPath: string;
-  try {
-    configPath = updateGlobalConfig((raw) => {
-      const registry = isPlainObject(raw["providers"]) ? { ...raw["providers"] } : {};
-      registry[draft.name] = draftToEntry(draft);
-      return { ...raw, providers: registry, activeProvider: draft.name };
-    }, p.config);
-  } catch (e) {
-    if (stored) restoreCredential(draft.name, previousKey, p.credentials);
-    throw e;
-  }
+    let configPath: string;
+    try {
+      configPath = updateGlobalConfig((raw) => {
+        const registry = isPlainObject(raw["providers"]) ? { ...raw["providers"] } : {};
+        registry[draft.name] = draftToEntry(draft);
+        return { ...raw, providers: registry, activeProvider: draft.name };
+      }, p.config);
+    } catch (e) {
+      if (stored || opts.clearStoredCredential) restoreCredential(draft.name, previousKey, p.credentials);
+      throw e;
+    }
 
-  return { configPath, stored };
+    return { configPath, stored };
+  });
 }
 
 /**
@@ -161,28 +181,30 @@ export type ForgetResult = {
  */
 export function forgetProvider(name: string, opts: RegistryPaths = {}): ForgetResult {
   const p = paths(opts);
-  const previousKey = readCredential(name, p.credentials);
-  const removedKey = deleteCredential(name, p.credentials);
+  return withRegistryTransaction(p, () => {
+    const previousKey = readCredential(name, p.credentials);
+    const removedKey = deleteCredential(name, p.credentials);
 
-  let wasActive = false;
-  let configPath: string;
-  try {
-    configPath = updateGlobalConfig((raw) => {
-      const registry = isPlainObject(raw["providers"]) ? { ...raw["providers"] } : {};
-      delete registry[name];
-      const next: Record<string, unknown> = { ...raw, providers: registry };
-      if (raw["activeProvider"] === name) {
-        wasActive = true;
-        delete next["activeProvider"];
-      }
-      return next;
-    }, p.config);
-  } catch (e) {
-    if (removedKey) restoreCredential(name, previousKey, p.credentials);
-    throw e;
-  }
+    let wasActive = false;
+    let configPath: string;
+    try {
+      configPath = updateGlobalConfig((raw) => {
+        const registry = isPlainObject(raw["providers"]) ? { ...raw["providers"] } : {};
+        delete registry[name];
+        const next: Record<string, unknown> = { ...raw, providers: registry };
+        if (raw["activeProvider"] === name) {
+          wasActive = true;
+          delete next["activeProvider"];
+        }
+        return next;
+      }, p.config);
+    } catch (e) {
+      if (removedKey) restoreCredential(name, previousKey, p.credentials);
+      throw e;
+    }
 
-  return { configPath, removedKey, wasActive };
+    return { configPath, removedKey, wasActive };
+  });
 }
 
 /**

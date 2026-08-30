@@ -115,7 +115,9 @@ ${bold("OUTPUT")}
       --theme <name>         opencode | dracula | zenburn | plain (default: opencode)
       --refresh              re-fetch the models.dev catalog (providers/models)
   -m, --method <how>         api | env, for providers login (skips the question)
-                             with --provider and --model, -m env needs no terminal
+      --trust-catalog-endpoint
+                             acknowledge the remote endpoint for non-interactive providers login
+                             with --provider and --model, -m env needs no terminal when trusted
   -h, --help                 show this help
 
 ${bold("EXAMPLES")}
@@ -156,6 +158,7 @@ function parse() {
         // `rocky providers login` / `rocky models`, mirroring opencode's flags.
         refresh: { type: "boolean" },
         method: { type: "string", short: "m" },
+        "trust-catalog-endpoint": { type: "boolean" },
       },
       allowPositionals: true,
       strict: true,
@@ -239,6 +242,7 @@ async function main(): Promise<number> {
       ...(values.provider ? { provider: values.provider } : {}),
       ...(values.model ? { model: values.model } : {}),
       ...(values.method ? { method: values.method } : {}),
+      ...(values["trust-catalog-endpoint"] === true ? { trustCatalogEndpoint: true } : {}),
     });
   }
   if (subcommand === "broker") {

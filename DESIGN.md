@@ -15,7 +15,7 @@ Updated as each milestone lands.
 | 6. Reliability and evals | **mostly done** — retry wrapper and `bench/` shipped in the coding-performance pass; resumable streaming and `--resume` deferred |
 | 7. Coding-performance pass | **done** — todo_write, post-edit checks, multi-edit, token-aware compaction, honest sub-agent stop reasons, provider retries, `bench/`. Background bash and `--resume` deferred by user decision |
 
-783 tests, typecheck clean.
+961 tests, typecheck clean.
 
 ### Live validation
 

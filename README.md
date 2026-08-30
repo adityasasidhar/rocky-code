@@ -17,8 +17,9 @@ Rocky hires Codex, Claude Code, and OpenCode as disposable contractors, keeps th
 in sealed containers that have never seen your checkout, and refuses to believe a
 word they say until TrueForge has proved it in a sandbox and you have said yes.
 
-[![CI](https://github.com/adityasasidhar/rocky-code/actions/workflows/ci.yml/badge.svg)](https://github.com/adityasasidhar/rocky-code/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-783%20passing-2ea043)](#verification)
+[![CI](https://github.com/adityasasidhar/rocky-code/actions/workflows/ci.yml
+/badge.svg)](https://github.com/adityasasidhar/rocky-code/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-961%20passing-2ea043)](#verification)
 [![typecheck](https://img.shields.io/badge/tsc-strict%20%C2%B7%20clean-2ea043)](#verification)
 [![runtime](https://img.shields.io/badge/runtime-Bun%201.4-f472b6)](https://bun.sh)
 [![harness](https://img.shields.io/badge/harness-TrueForge%200.1.x-6366f1)](https://github.com/truefoundry/trueforge)
@@ -76,6 +77,24 @@ requires a **restart**. Rocky never hot-loads code it wrote.
 
 ## Quickstart
 
+Rocky is a client. The harness runs beside it, so bring TrueForge up first:
+
+```bash
+npx @truefoundry/trueforge@latest                # serves http://localhost:8790
+```
+
+Local mode is one process over SQLite with no login, which is why
+`trueforge.tokenEnv` can stay unset. Then, in its UI at `localhost:8790`:
+
+- **Settings → Models** — configure a provider and paste its key. The FQN Rocky
+  wants is the model's `name` prefixed by its provider (`openai/gpt-5-4-mini`),
+  not the upstream `model_id` (`gpt-5.4-mini`).
+- **Settings → Sandbox providers** — select Daytona and paste a
+  [Daytona](https://daytona.io) API key that may write and delete snapshots and
+  write sandboxes. **Rocky cannot run a turn without this.** Every turn attaches
+  the workspace snapshot as a file, and TrueForge materializes attachments in the
+  sandbox — with none configured the turn fails instead of degrading.
+
 ```bash
 git clone https://github.com/adityasasidhar/rocky-code && cd rocky-code
 bun install
@@ -95,9 +114,9 @@ line below is a check it actually performs, shown here with workers enabled:
 $ rocky doctor
 ✓ TrueForge            200 OK
 ✓ root model           claude-opus-4-8
-✓ Daytona sandbox      enabled in the TrueForge agent spec
+✓ Daytona sandbox      daytona · image ready
 ✓ Docker               29.7.2
-✓ worker codex         codex · rocky-worker-codex:0.48.0
+✓ worker codex         codex · rocky-worker-codex:0.150.1
 ✓ codex credentials    1 required variable(s) present
 ✓ worker broker        authenticated MCP ping succeeded · bearer token configured
 ✓ Git workspace        /home/you/projects/api-server
@@ -204,7 +223,7 @@ captured benchmark:
   ⎿ codex — strongest on narrow, test-anchored TypeScript fixes
      claude — fallback; opencode — image unavailable
 
-⏺ worker_start(codex · rocky-worker-codex:0.48.0)
+⏺ worker_start(codex · rocky-worker-codex:0.150.1)
   ⎿ container up · workspace copy extracted · no host mount
 
 ⏺ worker_result(codex)
@@ -344,7 +363,7 @@ these tags.
 
 ```bash
 bunx tsc --noEmit   # strict, plus noUnusedLocals/Parameters/UncheckedIndexedAccess
-bun test            # 783 pass · 1 skip · 0 fail · 44 files · ~6.5s
+bun test            # 961 pass · 1 skip · 0 fail · 54 files · ~7.2s
 ```
 
 CI runs both on every PR, plus the container isolation fixture and a gitleaks

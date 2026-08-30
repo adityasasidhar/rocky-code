@@ -241,16 +241,16 @@ describe("the credential store never reports a deletion it did not do", () => {
     expect(readCredential("other", p.credentials)).toBe("sk-2");
   });
 
-  test("a delete that cannot happen throws instead of returning true", () => {
+  test("a delete hardens its parent before removing the credential", () => {
     if (asRoot) return;
     const p = paths();
     writeCredential("acme", "sk-1", p.credentials);
-    // The old code swallowed the unlink failure and said "removed" while the
-    // key was still on disk.
+    // Credential mutation now tightens the directory before acquiring its
+    // lock, so an owner can safely remove the key even after a permissive mode.
     sealed(dir, () => {
-      expect(() => deleteCredential("acme", p.credentials)).toThrow();
+      expect(deleteCredential("acme", p.credentials)).toBe(true);
     });
-    expect(readCredential("acme", p.credentials)).toBe("sk-1");
+    expect(readCredential("acme", p.credentials)).toBeUndefined();
   });
 
   test("nothing to delete is false, not an error", () => {

@@ -150,6 +150,10 @@ export async function runConnect(ctx: ProviderCommandCtx, refresh = false): Prom
   const model = await pickModel(ctx, ui, provider);
   if (model === undefined) return void ctx.out("cancelled — nothing was saved");
 
+  if (!(await confirmCatalogEndpoint(ui, provider))) {
+    return void ctx.out("cancelled — the catalog endpoint was not approved");
+  }
+
   const auth = await pickAuthMethod(ui, provider);
   if (auth === undefined) return void ctx.out("cancelled — nothing was saved");
 
@@ -258,6 +262,26 @@ export function endpointHost(provider: CatalogProvider): string | undefined {
 }
 
 /**
+ * Catalog data is remote input. Choosing a provider is not consent to hand a
+ * credential to whatever URL it happens to advertise, so require a deliberate
+ * approval of the exact origin before that endpoint is persisted.
+ */
+async function confirmCatalogEndpoint(ui: ProviderUi, provider: CatalogProvider): Promise<boolean> {
+  const api = safeEndpoint(provider.api);
+  if (api === undefined) return true;
+  const origin = new URL(api).origin;
+  const answer = await ui.select({
+    title: `${provider.name} · endpoint`,
+    placeholder: "",
+    items: [
+      { value: "trust", label: `Trust ${origin}`, hint: "credentials will be sent here" },
+      { value: "cancel", label: "Cancel", hint: "do not save this endpoint" },
+    ],
+  });
+  return answer === "trust";
+}
+
+/**
  * opencode asks *how* to authenticate before asking for anything. Rocky offers
  * the two methods it supports; an OAuth row would slot in here without
  * reshaping the flow.
@@ -310,7 +334,10 @@ async function finishRegistration(
   draft: ProviderDraft,
   secret: string | undefined,
 ): Promise<void> {
-  const saved = registerProvider(draft, secret, ctx.paths ?? {});
+  const saved = registerProvider(draft, secret, {
+    ...(ctx.paths ?? {}),
+    ...(secret === undefined ? { clearStoredCredential: true } : {}),
+  });
   ctx.session.config.providers[draft.name] = {
     kind: draft.kind,
     reasoningEffort: false,

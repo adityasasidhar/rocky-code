@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config/schema.ts";
-import { readCredential } from "../src/config/credentials.ts";
+import { readCredential, writeCredential } from "../src/config/credentials.ts";
 import { readRawConfig } from "../src/config/write.ts";
 import { Session } from "../src/core/session.ts";
 import type { ProviderCommandCtx } from "../src/core/provider_command.ts";
@@ -141,12 +141,13 @@ describe("modelItems", () => {
 
 describe("/connect", () => {
   test("provider → model → API key registers everything the catalog knows", async () => {
-    const ctx = harness(["minimax", "MiniMax-M3", "api", "sk-super-secret"]);
+    const ctx = harness(["minimax", "MiniMax-M3", "trust", "api", "sk-super-secret"]);
     await runConnect(ctx);
 
     expect(ctx.asked).toEqual([
       "Add provider",
       "MiniMax (minimax.io) · model",
+      "MiniMax (minimax.io) · endpoint",
       "MiniMax (minimax.io) · authentication",
       "MiniMax (minimax.io) · API key",
     ]);
@@ -168,7 +169,7 @@ describe("/connect", () => {
   });
 
   test("the key reaches the credentials store and nothing else", async () => {
-    const ctx = harness(["minimax", "MiniMax-M3", "api", "sk-super-secret"]);
+    const ctx = harness(["minimax", "MiniMax-M3", "trust", "api", "sk-super-secret"]);
     await runConnect(ctx);
 
     expect(readCredential("minimax", ctx.paths!.credentials!)).toBe("sk-super-secret");
@@ -177,7 +178,7 @@ describe("/connect", () => {
   });
 
   test("choosing the environment method stores no secret", async () => {
-    const ctx = harness(["minimax", "MiniMax-M2", "env"]);
+    const ctx = harness(["minimax", "MiniMax-M2", "trust", "env"]);
     await runConnect(ctx);
 
     expect(readCredential("minimax", ctx.paths!.credentials!)).toBeUndefined();
@@ -186,10 +187,29 @@ describe("/connect", () => {
   });
 
   test("an empty key falls back to the environment rather than storing nothing usefully", async () => {
-    const ctx = harness(["minimax", "MiniMax-M2", "api", ""]);
+    const ctx = harness(["minimax", "MiniMax-M2", "trust", "api", ""]);
     await runConnect(ctx);
     expect(readCredential("minimax", ctx.paths!.credentials!)).toBeUndefined();
     expect(readRawConfig(ctx.paths!.config!)["activeProvider"]).toBe("minimax");
+  });
+
+  test("environment and blank-key registration clear an older stored credential", async () => {
+    const env = harness(["minimax", "MiniMax-M2", "trust", "env"]);
+    writeCredential("minimax", "sk-old", env.paths!.credentials!);
+    await runConnect(env);
+    expect(readCredential("minimax", env.paths!.credentials!)).toBeUndefined();
+
+    const blank = harness(["minimax", "MiniMax-M2", "trust", "api", ""]);
+    writeCredential("minimax", "sk-old", blank.paths!.credentials!);
+    await runConnect(blank);
+    expect(readCredential("minimax", blank.paths!.credentials!)).toBeUndefined();
+  });
+
+  test("does not persist an endpoint the user rejects", async () => {
+    const ctx = harness(["minimax", "MiniMax-M3", "cancel"]);
+    await runConnect(ctx);
+    expect(readRawConfig(ctx.paths!.config!)).toEqual({});
+    expect(ctx.output()).toContain("endpoint was not approved");
   });
 
   test("picking an undrivable provider explains itself and writes nothing", async () => {
@@ -204,7 +224,8 @@ describe("/connect", () => {
       [undefined],
       ["minimax", undefined],
       ["minimax", "MiniMax-M3", undefined],
-      ["minimax", "MiniMax-M3", "api", undefined],
+      ["minimax", "MiniMax-M3", "trust", undefined],
+      ["minimax", "MiniMax-M3", "trust", "api", undefined],
     ]) {
       const ctx = harness(script);
       await runConnect(ctx);

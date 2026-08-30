@@ -195,6 +195,8 @@ export type LoginOptions = {
   method?: string | undefined;
   /** Injected for tests; defaults to whether stdin is a terminal. */
   isTty?: boolean | undefined;
+  /** Explicitly accept the catalog endpoint in a non-interactive invocation. */
+  trustCatalogEndpoint?: boolean | undefined;
 };
 
 /** Thrown at the moment a question is unavoidable and there is nobody to ask. */
@@ -203,6 +205,67 @@ class NonInteractive extends Error {
     super(question);
     this.name = "NonInteractive";
   }
+}
+
+/**
+ * Read an API key without ever writing it to terminal scrollback. Readline
+ * cannot suppress echo, so this small raw-mode reader owns the terminal only
+ * for the secret itself and restores its state on every exit path.
+ */
+async function askSecret(question: string): Promise<string | undefined> {
+  const input = process.stdin;
+  const output = process.stdout;
+  if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") {
+    throw new NonInteractive(question.trim());
+  }
+
+  return new Promise((resolve, reject) => {
+    let value = "";
+    const wasPaused = input.isPaused();
+    const wasRaw = input.isRaw;
+
+    const cleanup = () => {
+      input.off("data", onData);
+      input.off("error", onError);
+      if (!wasRaw) input.setRawMode(false);
+      if (wasPaused) input.pause();
+    };
+    const finish = (result: string | undefined) => {
+      cleanup();
+      output.write("\n");
+      resolve(result);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk: string | Buffer) => {
+      for (const char of chunk.toString()) {
+        if (char === "\r" || char === "\n") return finish(value);
+        if (char === "\u0003" || char === "\u0004" || char === "\u001b") return finish(undefined);
+        if (char === "\b" || char === "\u007f") {
+          if (value.length > 0) {
+            value = value.slice(0, -1);
+            output.write("\b \b");
+          }
+          continue;
+        }
+        // Printable Unicode only: pastes with embedded controls never become
+        // a malformed authorization header or a persisted credential.
+        const code = char.codePointAt(0)!;
+        if (code >= 0x20 && (code < 0x7f || code > 0x9f)) {
+          value += char;
+          output.write("•");
+        }
+      }
+    };
+
+    output.write(question);
+    input.setRawMode(true);
+    input.resume();
+    input.on("data", onData);
+    input.once("error", onError);
+  });
 }
 
 /**
@@ -273,15 +336,31 @@ export async function providersLogin(catalog: Catalog, opts: LoginOptions): Prom
       return EXIT_ERROR;
     }
 
+    const endpoint = providerConfigFrom(provider)?.baseUrl;
+    if (endpoint && !opts.trustCatalogEndpoint) {
+      const origin = new URL(endpoint).origin;
+      const confirmed = (
+        await ask(`Catalog endpoint ${origin}; type trust to allow credentials there: `)
+      )
+        .trim()
+        .toLowerCase();
+      if (confirmed !== "trust") {
+        console.error(red("catalog endpoint was not approved"));
+        return EXIT_ERROR;
+      }
+    }
+
     let secret: string | undefined;
     if (method === "api") {
-      // No masking here: a shell's readline cannot hide it without raw mode,
-      // and pretending otherwise would be worse than saying so.
-      const endpoint = providerConfigFrom(provider)?.baseUrl;
+      // Close the ordinary readline interface before temporarily taking raw
+      // ownership of stdin. The key itself is rendered as bullets only.
+      rl?.close();
+      rl = undefined;
       const where = endpoint ? ` → ${new URL(endpoint).host}` : "";
-      const typed = (
-        await ask(`API key for ${provider.name}${where} (visible; blank to use the environment): `)
-      ).trim();
+      const typed = await askSecret(
+        `API key for ${provider.name}${where} (blank to use the environment): `,
+      );
+      if (typed === undefined) return EXIT_ERROR;
       secret = typed === "" ? undefined : typed;
     }
 
@@ -297,6 +376,7 @@ export async function providersLogin(catalog: Catalog, opts: LoginOptions): Prom
         ...(config.pricing === undefined ? {} : { pricing: config.pricing }),
       },
       secret,
+      secret === undefined ? { clearStoredCredential: true } : undefined,
     );
     console.log(
       `${green("✓")} registered ${provider.id} · ${config.kind} · ${model}\n` +
@@ -310,7 +390,7 @@ export async function providersLogin(catalog: Catalog, opts: LoginOptions): Prom
       console.error(
         dim(
           "  stdin is not a TTY. Run it from a terminal, or pass --provider, --model\n" +
-            "  and -m env to register without being asked anything.\n" +
+            "  and -m env --trust-catalog-endpoint to register without being asked anything.\n" +
             "  -m api cannot run unattended: the key itself is typed in.",
         ),
       );

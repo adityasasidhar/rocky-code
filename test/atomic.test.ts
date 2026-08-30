@@ -86,10 +86,29 @@ describe("withFileLock", () => {
   test("a lock left by a dead process is broken rather than waited on", () => {
     const path = join(dir, "config.json");
     const lock = `${path}.lock`;
-    writeFileSync(lock, "");
+    writeFileSync(lock, JSON.stringify({ pid: 999_999_999, token: "dead-owner" }));
     const old = new Date(Date.now() - 120_000); // past LOCK_STALE_MS
     utimesSync(lock, old, old);
     expect(withFileLock(path, () => "recovered")).toBe("recovered");
     expect(existsSync(lock)).toBe(false);
+  });
+
+  test("a stale-looking lock owned by a live process is never evicted", () => {
+    const path = join(dir, "config.json");
+    const lock = `${path}.lock`;
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "live-owner" }));
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(lock, old, old);
+    expect(() => withFileLock(path, () => "never", { timeoutMs: 100 })).toThrow(LockTimeout);
+    expect(existsSync(lock)).toBe(true);
+  });
+
+  test("a holder never releases a lock whose token changed", () => {
+    const path = join(dir, "config.json");
+    const lock = `${path}.lock`;
+    withFileLock(path, () => {
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "successor" }));
+    });
+    expect(JSON.parse(readFileSync(lock, "utf8"))).toEqual({ pid: process.pid, token: "successor" });
   });
 });

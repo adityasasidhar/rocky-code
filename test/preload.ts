@@ -7,8 +7,13 @@
  * `loadConfig` tests fail with their own `activeProvider`. CI has no config, so
  * the failure only ever appears locally, which is the worst place for it.
  */
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-process.env["ROCKY_HOME"] ??= mkdtempSync(join(tmpdir(), "rocky-home-"));
+const testHome = mkdtempSync(join(tmpdir(), "rocky-home-"));
+process.env["ROCKY_HOME"] = testHome;
+
+process.on("exit", () => {
+  rmSync(testHome, { recursive: true, force: true });
+});
