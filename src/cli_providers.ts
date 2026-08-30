@@ -5,8 +5,8 @@
  * These run without a session, so they have no dialog layer. `providers list`,
  * `providers logout`, and `models` need none. `providers login` reads from
  * stdin instead: a filter, then a number. The searchable picker lives in the
- * session, at `/connect` — this is the scriptable path (`-p`/`-m` skip every
- * question but the key itself).
+ * session, at `/connect` — this is the scriptable path
+ * (`--provider`/`--model`/`-m env` skip every question, and so run unattended).
  */
 import { createInterface } from "node:readline/promises";
 import {
@@ -187,15 +187,46 @@ async function choose<T>(
 }
 
 export type LoginOptions = {
-  /** `-p`: skip provider selection. */
+  /** `--provider`: skip provider selection. */
   provider?: string | undefined;
+  /** `--model`: skip model selection. */
+  model?: string | undefined;
   /** `-m`: `api` or `env`, skipping method selection. */
   method?: string | undefined;
+  /** Injected for tests; defaults to whether stdin is a terminal. */
+  isTty?: boolean | undefined;
 };
 
+/** Thrown at the moment a question is unavoidable and there is nobody to ask. */
+class NonInteractive extends Error {
+  constructor(readonly question: string) {
+    super(question);
+    this.name = "NonInteractive";
+  }
+}
+
+/**
+ * The model an unattended run named, checked against the catalog before it is
+ * persisted. A provider that lists no models takes any id — that is the same
+ * latitude the interactive path gives, and the catalog is not exhaustive.
+ */
+function resolveModel(provider: CatalogProvider, model: string): string | undefined {
+  const models = catalogModels(provider);
+  if (models.length === 0) return model;
+  return models.some((m) => m.id === model) ? model : undefined;
+}
+
 export async function providersLogin(catalog: Catalog, opts: LoginOptions): Promise<number> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const ask: Ask = (question) => rl.question(question);
+  const interactive = opts.isTty ?? Boolean(process.stdin.isTTY);
+
+  // Built on demand. A fully specified login must not touch stdin at all —
+  // opening a readline on a pipe is what made this command hang in CI.
+  let rl: ReturnType<typeof createInterface> | undefined;
+  const ask: Ask = (question) => {
+    if (!interactive) throw new NonInteractive(question.trim());
+    rl ??= createInterface({ input: process.stdin, output: process.stdout });
+    return rl.question(question);
+  };
 
   try {
     const id =
@@ -224,8 +255,16 @@ export async function providersLogin(catalog: Catalog, opts: LoginOptions): Prom
       return EXIT_ERROR;
     }
 
-    const model = await chooseModel(ask, provider);
-    if (!model) return EXIT_ERROR;
+    const model = opts.model
+      ? resolveModel(provider, opts.model)
+      : await chooseModel(ask, provider);
+    if (!model) {
+      if (opts.model) {
+        console.error(red(`${provider.name} has no model "${opts.model}" in the catalog`));
+        console.error(dim(`  rocky models ${provider.id}  lists them`));
+      }
+      return EXIT_ERROR;
+    }
 
     const config = providerConfigFrom(provider, model)!;
     const method = opts.method ?? (await chooseMethod(ask, provider));
@@ -238,8 +277,10 @@ export async function providersLogin(catalog: Catalog, opts: LoginOptions): Prom
     if (method === "api") {
       // No masking here: a shell's readline cannot hide it without raw mode,
       // and pretending otherwise would be worse than saying so.
+      const endpoint = providerConfigFrom(provider)?.baseUrl;
+      const where = endpoint ? ` → ${new URL(endpoint).host}` : "";
       const typed = (
-        await ask(`API key for ${provider.name} (visible; blank to use the environment): `)
+        await ask(`API key for ${provider.name}${where} (visible; blank to use the environment): `)
       ).trim();
       secret = typed === "" ? undefined : typed;
     }
@@ -263,8 +304,21 @@ export async function providersLogin(catalog: Catalog, opts: LoginOptions): Prom
         (saved.stored ? dim("\n  key stored 0600 in ~/.rocky/credentials.json") : ""),
     );
     return EXIT_OK;
+  } catch (e) {
+    if (e instanceof NonInteractive) {
+      console.error(red(`rocky providers login needs a terminal to ask: ${e.question}`));
+      console.error(
+        dim(
+          "  stdin is not a TTY. Run it from a terminal, or pass --provider, --model\n" +
+            "  and -m env to register without being asked anything.\n" +
+            "  -m api cannot run unattended: the key itself is typed in.",
+        ),
+      );
+      return EXIT_ERROR;
+    }
+    throw e;
   } finally {
-    rl.close();
+    rl?.close();
   }
 }
 

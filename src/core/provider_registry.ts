@@ -14,6 +14,7 @@ import { ProviderConfigSchema, type Config, type ProviderConfig } from "../confi
 import {
   credentialsPath,
   deleteCredential,
+  readCredential,
   resolveApiKey,
   writeCredential,
   type KeySource,
@@ -43,39 +44,95 @@ export type RegisterResult = {
   stored: boolean;
 };
 
+/**
+ * The key is committed before the entry that needs it, and rolled back if the
+ * entry fails to land.
+ *
+ * Order matters because the two files are read back independently. An active
+ * `providers[name]` whose credential never got written is a config the next
+ * process loads and cannot authenticate — it looks configured and fails at the
+ * first request. The reverse (a stored key with no entry) is inert, and the
+ * rollback removes even that.
+ */
 export function registerProvider(
   draft: ProviderDraft,
   secret?: string,
   opts: RegistryPaths = {},
 ): RegisterResult {
   const p = paths(opts);
-  const configPath = updateGlobalConfig((raw) => {
-    const registry = isPlainObject(raw["providers"]) ? { ...raw["providers"] } : {};
-    registry[draft.name] = draftToEntry(draft);
-    return { ...raw, providers: registry, activeProvider: draft.name };
-  }, p.config);
+  const stored = secret !== undefined && secret !== "";
 
-  if (secret !== undefined && secret !== "") {
-    writeCredential(draft.name, secret, p.credentials);
+  const previousKey = stored ? readCredential(draft.name, p.credentials) : undefined;
+  if (stored) writeCredential(draft.name, secret, p.credentials);
+
+  let configPath: string;
+  try {
+    configPath = updateGlobalConfig((raw) => {
+      const registry = isPlainObject(raw["providers"]) ? { ...raw["providers"] } : {};
+      registry[draft.name] = draftToEntry(draft);
+      return { ...raw, providers: registry, activeProvider: draft.name };
+    }, p.config);
+  } catch (e) {
+    if (stored) restoreCredential(draft.name, previousKey, p.credentials);
+    throw e;
   }
-  return { configPath, stored: secret !== undefined && secret !== "" };
+
+  return { configPath, stored };
 }
+
+/**
+ * Put a credential back the way it was — deleting one that did not exist
+ * before, restoring the value that did. Failures here are swallowed on
+ * purpose: the caller is already throwing the error that matters, and a
+ * rollback that throws would replace it with a less useful one.
+ */
+function restoreCredential(
+  name: string,
+  previous: string | undefined,
+  path: string,
+): void {
+  try {
+    if (previous === undefined) deleteCredential(name, path);
+    else writeCredential(name, previous, path);
+  } catch {
+    // Nothing better to try; the original failure is the one reported.
+  }
+}
+
+/** The half of a registry entry that belongs to the model rather than the endpoint. */
+export type ModelMetadata = {
+  contextWindow?: number | undefined;
+  pricing?: { input: number; output: number } | undefined;
+};
 
 /**
  * Change which model a registered provider defaults to, without disturbing the
  * rest of its entry. `/models` switching a model must not rewrite the endpoint
  * or credential variable that were resolved when it was registered.
+ *
+ * `meta` is a *replacement*, not a merge, and omitting a field deletes it: the
+ * window and price belong to the model, so carrying the old model's numbers
+ * into the new one silently mis-sizes compaction and mis-reports cost. A model
+ * the catalog says nothing about is better left with no numbers than with
+ * someone else's.
  */
 export function setRegistryModel(
   name: string,
   model: string,
+  meta: ModelMetadata = {},
   opts: RegistryPaths = {},
 ): string {
   return updateGlobalConfig((raw) => {
     const registry = isPlainObject(raw["providers"]) ? { ...raw["providers"] } : {};
     const entry = registry[name];
     if (!isPlainObject(entry)) return raw;
-    registry[name] = { ...entry, model };
+    const { contextWindow: _window, pricing: _pricing, ...rest } = entry;
+    registry[name] = {
+      ...rest,
+      model,
+      ...(meta.contextWindow === undefined ? {} : { contextWindow: meta.contextWindow }),
+      ...(meta.pricing === undefined ? {} : { pricing: meta.pricing }),
+    };
     return { ...raw, providers: registry, activeProvider: name };
   }, paths(opts).config);
 }
@@ -95,22 +152,37 @@ export type ForgetResult = {
 /**
  * Remove the entry *and* its stored key. Leaving an orphaned credential behind
  * would be a secret nobody remembers having, which is the worst kind.
+ *
+ * So the key goes first. Removing the entry first and then failing to delete
+ * the key would strand exactly that secret — invisible to `providers list`,
+ * still on disk. Failing the other way round leaves a registered provider whose
+ * key is gone, which is visible, harmless, and fixed by running the command
+ * again; the rollback below avoids even that when it can.
  */
 export function forgetProvider(name: string, opts: RegistryPaths = {}): ForgetResult {
   const p = paths(opts);
-  let wasActive = false;
-  const configPath = updateGlobalConfig((raw) => {
-    const registry = isPlainObject(raw["providers"]) ? { ...raw["providers"] } : {};
-    delete registry[name];
-    const next: Record<string, unknown> = { ...raw, providers: registry };
-    if (raw["activeProvider"] === name) {
-      wasActive = true;
-      delete next["activeProvider"];
-    }
-    return next;
-  }, p.config);
+  const previousKey = readCredential(name, p.credentials);
+  const removedKey = deleteCredential(name, p.credentials);
 
-  return { configPath, removedKey: deleteCredential(name, p.credentials), wasActive };
+  let wasActive = false;
+  let configPath: string;
+  try {
+    configPath = updateGlobalConfig((raw) => {
+      const registry = isPlainObject(raw["providers"]) ? { ...raw["providers"] } : {};
+      delete registry[name];
+      const next: Record<string, unknown> = { ...raw, providers: registry };
+      if (raw["activeProvider"] === name) {
+        wasActive = true;
+        delete next["activeProvider"];
+      }
+      return next;
+    }, p.config);
+  } catch (e) {
+    if (removedKey) restoreCredential(name, previousKey, p.credentials);
+    throw e;
+  }
+
+  return { configPath, removedKey, wasActive };
 }
 
 /**

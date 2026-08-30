@@ -6,4 +6,6 @@ preload = ["@opentui/solid/preload"]
 # checkout whose test suite must not run (or fail) as ours.
 [test]
 root = "test"
-preload = ["@opentui/solid/preload"]
+# ./preload.ts isolates ROCKY_HOME so the suite never reads the developer's own
+# ~/.config/rocky/config.json (see test/preload.ts).
+preload = ["@opentui/solid/preload", "./test/preload.ts"]

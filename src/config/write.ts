@@ -12,13 +12,22 @@
  * key order survive, because this file is hand-edited far more often than it is
  * written by us.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { writeFileAtomic, withFileLock } from "./atomic.ts";
 import { ConfigError } from "./load.ts";
 
+/**
+ * The home Rocky reads and writes its own files under. `ROCKY_HOME` exists so
+ * a test — or a sandboxed run — can point every path at a temp directory at
+ * once; without it, `loadConfig` would read the developer's real registry in
+ * the middle of a test suite.
+ */
+export const rockyHome = (): string => process.env["ROCKY_HOME"] ?? homedir();
+
 export const globalConfigPath = (): string =>
-  join(homedir(), ".config", "rocky", "config.json");
+  join(rockyHome(), ".config", "rocky", "config.json");
 
 /** Keys that would put a live secret in a file meant to be shareable. */
 const SECRET_KEYS = new Set(["apikey", "apisecret", "token", "key", "secret", "password"]);
@@ -66,14 +75,20 @@ export function readRawConfig(path: string = globalConfigPath()): RawConfig {
  * Read → mutate → write, returning the path written so the caller can show it.
  * The mutator receives (and returns) raw JSON, not a parsed `Config`: writing
  * back a parsed config would materialize every default into the user's file.
+ *
+ * The read and the write happen under one lock and land through one rename.
+ * Registration reads the whole registry to add a single entry, so an
+ * unserialized read-modify-write here does not race harmlessly — it drops the
+ * other process's provider.
  */
 export function updateGlobalConfig(
   mutate: (raw: RawConfig) => RawConfig,
   path: string = globalConfigPath(),
 ): string {
-  const next = mutate(readRawConfig(path));
-  assertNoSecrets(next);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-  return path;
+  return withFileLock(path, () => {
+    const next = mutate(readRawConfig(path));
+    assertNoSecrets(next);
+    writeFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
+    return path;
+  });
 }

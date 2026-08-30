@@ -209,6 +209,17 @@ export function SelectDialog(props: { dialog: SelectDialogRequest; colors: Foote
   );
 }
 
+/**
+ * The typeable part of a key sequence: no C0/C1 controls, no DEL, and nothing
+ * from an escape sequence. What this dialog collects becomes an API key or a
+ * model id, so a stray control character is never what was meant and is
+ * expensive to debug once persisted.
+ */
+export function printableOnly(sequence: string): string {
+  if (sequence.startsWith("\x1b")) return "";
+  return sequence.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+
 export function PromptDialog(props: { dialog: PromptDialogRequest; colors: FooterColors }) {
   const { colors } = props;
   // When masked, the value lives in a plain local and only its *length* reaches
@@ -242,10 +253,13 @@ export function PromptDialog(props: { dialog: PromptDialogRequest; colors: Foote
       if (!props.dialog.masked) setShown(secret);
       return;
     }
-    // Pasting arrives as one multi-character sequence; take it whole.
-    const char = key.sequence ?? "";
-    if (char.length >= 1 && !char.startsWith("\x1b") && char >= " ") {
-      secret += char;
+    // Pasting arrives as one multi-character sequence. Take it whole, but only
+    // the printable part of it: `"sk-abc\n" >= " "` is true — the comparison
+    // only looks at the first character — so a pasted key with a trailing
+    // newline used to be stored, newline and all, and then sent as a header.
+    const printable = printableOnly(key.sequence ?? "");
+    if (printable !== "") {
+      secret += printable;
       setLength(secret.length);
       if (!props.dialog.masked) setShown(secret);
     }

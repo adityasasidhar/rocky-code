@@ -90,7 +90,15 @@ Worker images build from `docker/workers/Dockerfile.*` with explicit `--build-ar
 Precedence low→high (`src/config/load.ts`): defaults → `~/.config/rocky/config.json` →
 `.rocky/config.json` → the active named provider → CLI flags, with
 `provider`/`trueforge`/`broker` merged one level deep. Schema and defaults are in
-`src/config/schema.ts`; `docs/config.example.json` is the template.
+`src/config/schema.ts`; `docs/config.example.json` is the template. `ROCKY_HOME`
+overrides the home every Rocky-owned path hangs off, which is how the test suite avoids
+reading the developer's own registry (`test/preload.ts`).
+
+**An endpoint override drops the registry name.** `--provider` skips the active entry's
+expansion entirely, and both `--provider` and `--base-url` delete `activeProvider` after
+it — so the entry still supplies kind, `apiKeyEnv`, window and price, but the *name* that
+resolves a stored credential is gone. Without that, `--provider ollama` over an active
+`minimax` inherited MiniMax's `baseUrl` and posted MiniMax's stored key to it.
 
 - `.rocky/` — per-project session artifacts, broker token, archived tool outputs. Gitignored
   via an auto-generated `.rocky/.gitignore` containing `*`.
@@ -105,8 +113,10 @@ Precedence low→high (`src/config/load.ts`): defaults → `~/.config/rocky/conf
   models.dev provider ids. `src/config/write.ts` is the only config writer and it refuses to
   serialize a literal secret.
 - **`/connect` and `/models`** (`src/core/connect_command.ts`) are the opencode-shaped
-  pickers; `/provider` and `/model` survive as unadvertised aliases (`KNOWN` in
-  `src/tui/input.ts`, not `SLASH_COMMANDS`). `src/config/catalog.ts` fetches models.dev,
+  pickers; `/provider` and `/model` survive as aliases — declared in `SLASH_COMMANDS`
+  like every other command but carrying `hidden: true`, so recognition, completion and
+  highlighting all read one table while `/help` (via `advertisedCommands()`) lists only
+  the names worth learning. `src/config/catalog.ts` fetches models.dev,
   caches to `~/.cache/rocky/models.json`, and maps the `npm` field to a Rocky provider kind —
   181 of 207 providers map; the rest stay listed but refuse with the SDK name. Costs are
   quoted per *million* tokens upstream and divided by 1e6 on the way in.
@@ -118,6 +128,16 @@ Precedence low→high (`src/config/load.ts`): defaults → `~/.config/rocky/conf
 - **Stored keys** live in `~/.rocky/credentials.json` (0600), written only by `/connect` and
   `rocky providers login`, and are a *fallback* — an env var named by `apiKeyEnv` always wins.
   Keys never enter `~/.rocky/history` and are masked while being typed.
+- **Both files are written through `src/config/atomic.ts`**: a same-directory temp file plus
+  `rename`, under a lock held across the whole read-modify-write. Registration reads the
+  entire registry to add one entry, so an unserialized write drops another session's
+  provider rather than racing harmlessly. Registration commits the *key first* and rolls it
+  back if the entry fails to land; removal deletes the key first, for the same reason in
+  reverse — neither half may outlive the other.
+- **The catalog is untrusted input** (`safeEndpoint` in `src/config/catalog.ts`): `api`
+  becomes the URL a key is sent to, so it must be absolute and `https`, or `http` to
+  loopback. The cache at `~/.cache/rocky/models.json` is a plain local file, which is
+  reason enough.
 - Other secrets come only from env vars *named* by config (`provider.apiKeyEnv`,
   `trueforge.tokenEnv`, `broker.tokenEnv`, worker `credentialEnv`) — values are never inlined
   into config and never logged. The same `OPENAI_API_KEY` backs both `openai` and
@@ -125,6 +145,9 @@ Precedence low→high (`src/config/load.ts`): defaults → `~/.config/rocky/conf
 
 ## Behaviors that surprise people
 
+- **A slash command that throws does not end the REPL**: both loops in `src/cli.ts` wrap
+  `runSlashCommand` and render the failure as a line of output. `/connect` writes two files
+  and can lose either to a full disk or a read-only home.
 - **Permissions** (`src/permissions/`): `deny` beats `yolo`; wrapper executables (`sudo`,
   `env`, `timeout`, …) are peeled by suffix match; `>`/`>>`/`&>`, `$(...)`, backticks, `eval`,
   and `exec` always prompt. Non-TTY `ask` denies with an unblock hint rather than hanging.

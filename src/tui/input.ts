@@ -10,6 +10,12 @@ export type SlashCommand = {
   /** How /help shows it, arguments included. */
   usage: string;
   what: string;
+  /**
+   * Accepted everywhere, advertised nowhere. Aliases carry this: they are real
+   * commands for recognition, completion, and highlighting, but /help lists the
+   * name people should learn rather than every spelling that works.
+   */
+  hidden?: boolean;
 };
 
 /**
@@ -37,19 +43,22 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/history", usage: "/history", what: "scroll through this session's output" },
   { name: "/help", usage: "/help", what: "this list" },
   { name: "/exit", usage: "/exit", what: "quit (also /quit or Ctrl-D)" },
+
+  // Aliases. `/model` and `/provider` predate the opencode-shaped `/models` and
+  // `/connect` and still work — muscle memory should not meet "unknown
+  // command". They sit in this table rather than in a second set beside it so
+  // that recognition, completion, and highlighting all keep reading one list;
+  // `hidden` is what keeps them out of /help, not a separate source of truth.
+  { name: "/quit", usage: "/quit", what: "alias for /exit", hidden: true },
+  { name: "/model", usage: "/model <id>", what: "alias for /models", hidden: true },
+  { name: "/provider", usage: "/provider", what: "alias for /connect", hidden: true },
 ];
 
-/**
- * Accepted but not advertised: aliases live here, not in the help table.
- * `/model` and `/provider` predate the opencode-shaped `/models` and `/connect`
- * and still work — muscle memory should not meet "unknown command".
- */
-const KNOWN = new Set([
-  ...SLASH_COMMANDS.map((c) => c.name),
-  "/quit",
-  "/model",
-  "/provider",
-]);
+/** What /help lists: every command except the aliases. */
+export const advertisedCommands = (): SlashCommand[] =>
+  SLASH_COMMANDS.filter((c) => c.hidden !== true);
+
+const KNOWN = new Set(SLASH_COMMANDS.map((c) => c.name));
 
 /**
  * readline completer. Tab on a partial command fills it in; anywhere else the

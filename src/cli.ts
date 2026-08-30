@@ -50,7 +50,7 @@ import {
   HISTORY_LIMIT,
   parseHistory,
   serializeHistory,
-  SLASH_COMMANDS,
+  advertisedCommands,
   splitTypeAhead,
   unknownCommand,
 } from "./tui/input.ts";
@@ -115,6 +115,7 @@ ${bold("OUTPUT")}
       --theme <name>         opencode | dracula | zenburn | plain (default: opencode)
       --refresh              re-fetch the models.dev catalog (providers/models)
   -m, --method <how>         api | env, for providers login (skips the question)
+                             with --provider and --model, -m env needs no terminal
   -h, --help                 show this help
 
 ${bold("EXAMPLES")}
@@ -123,7 +124,7 @@ ${bold("EXAMPLES")}
   rocky --provider openai --model gpt-5 -p "explain src/loop.ts"
   rocky --provider openai-compatible --base-url http://127.0.0.1:8080/v1 --model local
   MINIMAX_API_KEY=... rocky --provider minimax --model MiniMax-M2.7
-  rocky providers login -p minimax -m env
+  rocky providers login --provider minimax --model MiniMax-M2.7 -m env
   rocky models minimax --verbose
 
 ${bold("EXIT CODES")}
@@ -236,6 +237,7 @@ async function main(): Promise<number> {
       ...(values.refresh === true ? { refresh: true } : {}),
       ...(values.verbose === true ? { verbose: true } : {}),
       ...(values.provider ? { provider: values.provider } : {}),
+      ...(values.model ? { model: values.model } : {}),
       ...(values.method ? { method: values.method } : {}),
     });
   }
@@ -552,7 +554,9 @@ async function runSlashCommand(
   if (trimmed === "/exit" || trimmed === "/quit") return "exit";
   if (trimmed === "/help") {
     console.log(
-      SLASH_COMMANDS.map((c) => `  ${cyan(c.usage.padEnd(14))}${dim(c.what)}`).join("\n") +
+      advertisedCommands()
+        .map((c) => `  ${cyan(c.usage.padEnd(14))}${dim(c.what)}`)
+        .join("\n") +
         `\n  ${dim("Tab completes commands · type ahead during a turn to queue it")}`,
     );
     return "handled";
@@ -854,15 +858,26 @@ async function replFooter(
         store.setHistory([...history]);
       }
 
-      const outcome = await runSlashCommand(trimmed, {
-        session,
-        backend,
-        engine,
-        log,
-        planState,
-        workerState,
-        provider: providerCtx,
-      });
+      let outcome: Awaited<ReturnType<typeof runSlashCommand>>;
+      try {
+        outcome = await runSlashCommand(trimmed, {
+          session,
+          backend,
+          engine,
+          log,
+          planState,
+          workerState,
+          provider: providerCtx,
+        });
+      } catch (e) {
+        // A command that fails is a command that failed, not a session that
+        // ends. /connect writes two files and can lose either one to a full
+        // disk or a read-only home; that must come back as a line of output
+        // with the loop still running, not as a rejection out of the REPL.
+        console.error(red(explain(e).message));
+        store.setStatus(statusInfo());
+        continue;
+      }
       if (outcome === "exit") break;
       if (outcome === "handled") {
         store.setStatus(statusInfo());
@@ -1070,9 +1085,10 @@ async function repl(
       if (trimmed === "/exit" || trimmed === "/quit") break;
       if (trimmed === "/help") {
         console.log(
-          SLASH_COMMANDS.map(
-            (c) => `  ${cyan(c.usage.padEnd(14))}${dim(c.what)}`,
-          ).join("\n") + `\n  ${dim("Tab completes commands · type ahead during a turn to queue it")}`,
+          advertisedCommands()
+            .map((c) => `  ${cyan(c.usage.padEnd(14))}${dim(c.what)}`)
+            .join("\n") +
+            `\n  ${dim("Tab completes commands · type ahead during a turn to queue it")}`,
         );
         continue;
       }
@@ -1186,15 +1202,22 @@ async function repl(
         trimmed.startsWith("/models ")
       ) {
         const planState: { modeBeforePlan: PermissionMode } = { modeBeforePlan };
-        const outcome = await runSlashCommand(trimmed, {
-          session,
-          backend,
-          engine,
-          log,
-          planState,
-          provider: providerCtx,
-          workerState,
-        });
+        let outcome: Awaited<ReturnType<typeof runSlashCommand>>;
+        try {
+          outcome = await runSlashCommand(trimmed, {
+            session,
+            backend,
+            engine,
+            log,
+            planState,
+            provider: providerCtx,
+            workerState,
+          });
+        } catch (e) {
+          // Same boundary as the footer REPL: see the comment there.
+          console.error(red(explain(e).message));
+          continue;
+        }
         modeBeforePlan = planState.modeBeforePlan;
         if (outcome === "exit") break;
         if (outcome === "handled") continue;

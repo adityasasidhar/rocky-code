@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  advertisedCommands,
   completeSlash,
   HISTORY_LIMIT,
   parseHistory,
@@ -18,19 +19,22 @@ describe("completeSlash", () => {
 
   test("a bare slash offers everything", () => {
     const [hits] = completeSlash("/");
-    // Every advertised command completes, plus the unadvertised aliases:
-    // /quit, and the pre-opencode /model and /provider names.
-    const aliases = ["/quit", "/model", "/provider"];
-    expect(hits.length).toBe(SLASH_COMMANDS.length + aliases.length);
+    // Completion reads the whole table, aliases included — one list, so a
+    // command cannot be recognized in one place and unknown in another.
+    expect(hits.length).toBe(SLASH_COMMANDS.length);
     for (const c of SLASH_COMMANDS) expect(hits).toContain(c.name);
-    for (const alias of aliases) expect(hits).toContain(alias);
   });
 
   test("the aliases complete but stay out of the advertised list", () => {
-    expect(SLASH_COMMANDS.map((c) => c.name)).not.toContain("/model");
-    expect(SLASH_COMMANDS.map((c) => c.name)).not.toContain("/provider");
-    expect(unknownCommand("/model")).toBeUndefined();
-    expect(unknownCommand("/provider")).toBeUndefined();
+    const aliases = ["/quit", "/model", "/provider"];
+    for (const alias of aliases) {
+      // Declared in the one table, so recognition and completion see them...
+      expect(SLASH_COMMANDS.map((c) => c.name)).toContain(alias);
+      expect(unknownCommand(alias)).toBeUndefined();
+      // ...and marked hidden, so /help does not.
+      expect(advertisedCommands().map((c) => c.name)).not.toContain(alias);
+    }
+    expect(advertisedCommands().length).toBe(SLASH_COMMANDS.length - aliases.length);
   });
 
   test("prose never completes — Tab must not mangle a sentence", () => {

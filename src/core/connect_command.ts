@@ -17,6 +17,7 @@ import {
   isSupported,
   loadCatalog,
   providerConfigFrom,
+  safeEndpoint,
   unsupportedReason,
   type Catalog,
   type CatalogProvider,
@@ -25,7 +26,11 @@ import {
 import type { ProviderDraft } from "../config/providers.ts";
 import type { Config } from "../config/schema.ts";
 import type { PickerItem } from "../tui/app/store.ts";
-import { registerProvider, setRegistryModel } from "./provider_registry.ts";
+import {
+  registerProvider,
+  setRegistryModel,
+  type ModelMetadata,
+} from "./provider_registry.ts";
 import {
   startRegistration,
   useProvider,
@@ -241,6 +246,17 @@ async function pickModel(
 
 type AuthChoice = { secret?: string };
 
+/** The host a key would be sent to, for the prompt. Undefined when Rocky's own default applies. */
+export function endpointHost(provider: CatalogProvider): string | undefined {
+  const api = safeEndpoint(provider.api);
+  if (api === undefined) return undefined;
+  try {
+    return new URL(api).host;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * opencode asks *how* to authenticate before asking for anything. Rocky offers
  * the two methods it supports; an OAuth row would slot in here without
@@ -251,6 +267,11 @@ async function pickAuthMethod(
   provider: CatalogProvider,
 ): Promise<AuthChoice | undefined> {
   const envVar = provider.env[0];
+  // The endpoint comes from the catalog, and the key being typed is about to be
+  // sent there on every request. Naming the host in the prompt is the cheapest
+  // possible check on that: a redirected entry stops looking like the provider
+  // it claims to be the moment its host is on screen.
+  const host = endpointHost(provider);
   const items: PickerItem[] = [
     { value: "api", label: "API key", hint: "stored 0600 in ~/.rocky/credentials.json" },
   ];
@@ -272,9 +293,11 @@ async function pickAuthMethod(
 
   const key = await ui.prompt({
     title: `${provider.name} · API key`,
-    hint: envVar
-      ? `not echoed anywhere · Enter with nothing typed reads ${envVar} instead`
-      : "not echoed anywhere",
+    hint:
+      (host ? `sent to ${host} · ` : "") +
+      (envVar
+        ? `not echoed anywhere · Enter with nothing typed reads ${envVar} instead`
+        : "not echoed anywhere"),
     masked: true,
   });
   if (key === undefined) return undefined;
@@ -366,8 +389,40 @@ export async function runModels(ctx: ProviderCommandCtx): Promise<void> {
     return;
   }
 
+  // Window and price are per model, not per provider, so switching model has to
+  // re-derive them. Carrying the previous model's numbers forward would size
+  // compaction against a window this model does not have and bill every token
+  // at the old model's rate — both silently.
+  const meta = modelMetadata(entry.catalogId, model, catalog);
+  const { contextWindow: _window, pricing: _pricing, ...rest } = entry;
+
   // Persist the model against its provider, so the next session starts here.
-  ctx.session.config.providers[name] = { ...entry, model };
-  setRegistryModel(name, model, ctx.paths ?? {});
+  ctx.session.config.providers[name] = {
+    ...rest,
+    model,
+    ...(meta.contextWindow === undefined ? {} : { contextWindow: meta.contextWindow }),
+    ...(meta.pricing === undefined ? {} : { pricing: meta.pricing }),
+  };
+  setRegistryModel(name, model, meta, ctx.paths ?? {});
   await useProvider(name, ctx, {});
+}
+
+/**
+ * What the catalog says about one model of one provider. Everything is
+ * optional: a hand-written entry has no `catalogId`, a catalog entry can list a
+ * model with no limits, and both cases must clear the numbers rather than keep
+ * the ones that were there.
+ */
+export function modelMetadata(
+  catalogId: string | undefined,
+  model: string,
+  catalog: Catalog,
+): ModelMetadata {
+  const provider = catalogId ? catalog[catalogId] : undefined;
+  if (!provider) return {};
+  const config = providerConfigFrom(provider, model);
+  return {
+    ...(config?.contextWindow === undefined ? {} : { contextWindow: config.contextWindow }),
+    ...(config?.pricing === undefined ? {} : { pricing: config.pricing }),
+  };
 }

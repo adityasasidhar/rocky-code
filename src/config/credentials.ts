@@ -11,15 +11,23 @@
  * `OPENAI_API_KEY` for a single run must not be silently overridden by a value
  * they saved months ago.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { withFileLock, writeFileAtomic } from "./atomic.ts";
 import { defaultApiKeyEnv, type ProviderConfig } from "./schema.ts";
+import { rockyHome } from "./write.ts";
 
 export type CredentialStore = Record<string, string>;
 
 export const credentialsPath = (): string =>
-  join(homedir(), ".rocky", "credentials.json");
+  join(rockyHome(), ".rocky", "credentials.json");
+
+/** 0600 file inside a 0700 directory — the mode is half of what makes this safe. */
+const writeStore = (path: string, store: CredentialStore): void =>
+  writeFileAtomic(path, `${JSON.stringify(store, null, 2)}\n`, {
+    mode: 0o600,
+    dirMode: 0o700,
+  });
 
 /** Unreadable or corrupt is treated as empty: a bad file must not stop a session. */
 export function readCredentials(path: string = credentialsPath()): CredentialStore {
@@ -49,38 +57,46 @@ export function credentialNames(path: string = credentialsPath()): string[] {
 }
 
 /**
- * Persist one key. The mode is set on the directory, on creation, *and* with an
- * explicit chmod — `writeFileSync`'s mode is ignored when the file already
- * exists, and a 0644 credentials file is the whole bug this guards against.
+ * Persist one key. Written through a temp file and a rename, under the same
+ * lock the delete path takes: two sessions storing keys at once must not each
+ * write back the store they read and lose the other's.
  */
 export function writeCredential(
   name: string,
   key: string,
   path: string = credentialsPath(),
 ): void {
-  const store = readCredentials(path);
-  store[name] = key;
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  withFileLock(path, () => {
+    const store = readCredentials(path);
+    store[name] = key;
+    writeStore(path, store);
+  });
 }
 
-/** Returns whether anything was removed, so callers can report honestly. */
+/**
+ * Returns whether anything was removed, so callers can report honestly.
+ *
+ * "Honestly" is the whole contract here: a failure to remove the file must not
+ * come back as `true`, because the caller then tells someone their key is gone
+ * while it is still on disk. Unlinking is preferred, but an empty store is
+ * equally safe — and if neither succeeds, the error propagates.
+ */
 export function deleteCredential(name: string, path: string = credentialsPath()): boolean {
-  const store = readCredentials(path);
-  if (!(name in store)) return false;
-  delete store[name];
-  if (Object.keys(store).length === 0) {
-    try {
-      unlinkSync(path);
-    } catch {
-      // Best effort; an empty object below is equally safe.
+  return withFileLock(path, () => {
+    const store = readCredentials(path);
+    if (!(name in store)) return false;
+    delete store[name];
+    if (Object.keys(store).length === 0) {
+      try {
+        unlinkSync(path);
+      } catch {
+        writeStore(path, store);
+      }
+      return true;
     }
+    writeStore(path, store);
     return true;
-  }
-  writeFileSync(path, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(path, 0o600);
-  return true;
+  });
 }
 
 export type KeySource = "env" | "stored" | "none";

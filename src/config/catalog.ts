@@ -11,9 +11,9 @@
  * built-in seed. `/connect` has to work on a plane.
  */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProviderKind } from "./schema.ts";
+import { rockyHome } from "./write.ts";
 
 export const CATALOG_URL = "https://models.dev/api.json";
 
@@ -50,7 +50,7 @@ export type CatalogProvider = {
 export type Catalog = Record<string, CatalogProvider>;
 
 export const catalogCachePath = (): string =>
-  join(homedir(), ".cache", "rocky", "models.json");
+  join(rockyHome(), ".cache", "rocky", "models.json");
 
 /**
  * `npm` is the only reliable signal of how to talk to a provider — 167 of the
@@ -112,7 +112,79 @@ export const SEED_CATALOG: Catalog = {
   },
 };
 
-function parseCatalog(raw: unknown): Catalog {
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * The catalog decides where credentials get sent, so it is parsed as untrusted
+ * input rather than as configuration.
+ *
+ * `api` becomes `provider.baseUrl`, which is the URL a stored API key is handed
+ * to on every request. A tampered response — or a poisoned
+ * `~/.cache/rocky/models.json`, which is a plain file any local process can
+ * write — would otherwise be enough to redirect that traffic. So: absolute URLs
+ * only, `https` only, with `http` allowed just for loopback (Ollama and local
+ * gateways, which cannot be anyone else's machine). Anything else drops the
+ * endpoint and leaves the provider to Rocky's own default for its kind.
+ */
+export function safeEndpoint(api: unknown): string | undefined {
+  if (typeof api !== "string" || api === "") return undefined;
+  let url: URL;
+  try {
+    url = new URL(api);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol === "https:") return api;
+  if (url.protocol === "http:" && LOOPBACK.has(url.hostname)) return api;
+  return undefined;
+}
+
+/**
+ * Credential variable names are read straight out of `process.env`, so they
+ * have to look like variable names and nothing else.
+ */
+const isEnvName = (name: unknown): name is string =>
+  typeof name === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+
+/** A limit or price Rocky can account against: finite, non-negative, a number. */
+const safeNumber = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+
+function parseModel(id: string, raw: object): CatalogModel {
+  const model = raw as Record<string, unknown>;
+  const limit = (model["limit"] ?? {}) as Record<string, unknown>;
+  const cost = (model["cost"] ?? {}) as Record<string, unknown>;
+  const context = safeNumber(limit["context"]);
+  const output = safeNumber(limit["output"]);
+  const costs = {
+    ...(safeNumber(cost["input"]) === undefined ? {} : { input: safeNumber(cost["input"])! }),
+    ...(safeNumber(cost["output"]) === undefined ? {} : { output: safeNumber(cost["output"])! }),
+    ...(safeNumber(cost["cache_read"]) === undefined
+      ? {}
+      : { cache_read: safeNumber(cost["cache_read"])! }),
+    ...(safeNumber(cost["cache_write"]) === undefined
+      ? {}
+      : { cache_write: safeNumber(cost["cache_write"])! }),
+  };
+  return {
+    id,
+    ...(typeof model["name"] === "string" ? { name: model["name"] } : {}),
+    ...(context === undefined && output === undefined
+      ? {}
+      : {
+          limit: {
+            ...(context === undefined ? {} : { context }),
+            ...(output === undefined ? {} : { output }),
+          },
+        }),
+    ...(Object.keys(costs).length === 0 ? {} : { cost: costs }),
+    ...(typeof model["reasoning"] === "boolean" ? { reasoning: model["reasoning"] } : {}),
+    ...(typeof model["tool_call"] === "boolean" ? { tool_call: model["tool_call"] } : {}),
+  };
+}
+
+/** Exported for tests: this is the boundary that makes catalog data safe. */
+export function parseCatalog(raw: unknown): Catalog {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
   const out: Catalog = {};
   for (const [id, value] of Object.entries(raw)) {
@@ -121,18 +193,19 @@ function parseCatalog(raw: unknown): Catalog {
     const models: Record<string, CatalogModel> = {};
     if (typeof entry["models"] === "object" && entry["models"] !== null) {
       for (const [modelId, model] of Object.entries(entry["models"] as object)) {
-        if (typeof model === "object" && model !== null) {
-          models[modelId] = { id: modelId, ...(model as object) } as CatalogModel;
+        if (typeof model === "object" && model !== null && !Array.isArray(model)) {
+          models[modelId] = parseModel(modelId, model);
         }
       }
     }
+    const api = safeEndpoint(entry["api"]);
     out[id] = {
       id: typeof entry["id"] === "string" ? entry["id"] : id,
       name: typeof entry["name"] === "string" ? entry["name"] : id,
-      ...(typeof entry["api"] === "string" ? { api: entry["api"] } : {}),
+      ...(api === undefined ? {} : { api }),
       ...(typeof entry["npm"] === "string" ? { npm: entry["npm"] } : {}),
       ...(typeof entry["doc"] === "string" ? { doc: entry["doc"] } : {}),
-      env: Array.isArray(entry["env"]) ? entry["env"].filter((e) => typeof e === "string") : [],
+      env: Array.isArray(entry["env"]) ? entry["env"].filter(isEnvName) : [],
       models,
     };
   }
@@ -231,10 +304,16 @@ export function providerConfigFrom(
   const input = model?.cost?.input;
   const output = model?.cost?.output;
 
+  // Re-checked here as well as in the parser: a `CatalogProvider` can reach
+  // this function from a test fixture or a future caller that never went
+  // through `parseCatalog`, and this is the last point before the endpoint
+  // becomes the URL a key is sent to.
+  const baseUrl = safeEndpoint(provider.api);
+
   return {
     kind,
-    ...(provider.api ? { baseUrl: provider.api } : {}),
-    ...(provider.env[0] ? { apiKeyEnv: provider.env[0] } : {}),
+    ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(isEnvName(provider.env[0]) ? { apiKeyEnv: provider.env[0] } : {}),
     ...(context ? { contextWindow: context } : {}),
     ...(input !== undefined && output !== undefined
       ? { pricing: { input: input / COST_SCALE, output: output / COST_SCALE } }
