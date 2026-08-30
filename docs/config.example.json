@@ -8,11 +8,36 @@
     "sandbox": true,
     "dynamicSubagents": true
   },
+  "provider": {
+    "kind": "anthropic",
+    "apiKeyEnv": "ANTHROPIC_API_KEY"
+  },
+  "providers": {
+    "minimax": {
+      "kind": "anthropic",
+      "baseUrl": "https://api.minimax.io/anthropic/v1",
+      "apiKeyEnv": "MINIMAX_API_KEY",
+      "contextWindow": 1048576,
+      "pricing": {
+        "input": 3e-07,
+        "output": 1.2e-06
+      },
+      "catalogId": "minimax",
+      "model": "MiniMax-M3"
+    },
+    "ollama": {
+      "kind": "ollama",
+      "model": "qwen3:8b"
+    }
+  },
   "broker": {
     "host": "127.0.0.1",
     "port": 8791,
     "maxSnapshotBytes": 52428800,
-    "secretPatterns": ["**/*.secret.json", "private/**"],
+    "secretPatterns": [
+      "**/*.secret.json",
+      "private/**"
+    ],
     "maxRecoveryAttempts": 3,
     "workers": {
       "codex": {
@@ -21,27 +46,42 @@
         "image": "rocky-worker-codex:0.150.1",
         "model": "gpt-5.2-codex",
         "timeoutMs": 900000,
-        "capabilities": ["typescript", "refactor", "debug"],
+        "capabilities": [
+          "typescript",
+          "refactor",
+          "debug"
+        ],
         "costTier": 2,
         "concurrency": 1,
-        "credentialEnv": ["OPENAI_API_KEY"]
+        "credentialEnv": [
+          "OPENAI_API_KEY"
+        ]
       },
       "claude": {
         "enabled": true,
         "kind": "claude",
         "image": "rocky-worker-claude:2.1.250",
         "timeoutMs": 900000,
-        "capabilities": ["architecture", "typescript", "review"],
+        "capabilities": [
+          "architecture",
+          "typescript",
+          "review"
+        ],
         "costTier": 3,
         "concurrency": 1,
-        "credentialEnv": ["ANTHROPIC_API_KEY"]
+        "credentialEnv": [
+          "ANTHROPIC_API_KEY"
+        ]
       },
       "opencode": {
         "enabled": false,
         "kind": "opencode",
         "image": "rocky-worker-opencode:1.18.25",
         "timeoutMs": 900000,
-        "capabilities": ["typescript", "local-model"],
+        "capabilities": [
+          "typescript",
+          "local-model"
+        ],
         "costTier": 1,
         "concurrency": 1,
         "credentialEnv": []

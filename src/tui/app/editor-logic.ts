@@ -4,7 +4,7 @@
  * save/restore (parity with the old editor), ghost-text suggestions, and the
  * slash-command popup's matching.
  */
-import { SLASH_COMMANDS } from "../input.ts";
+import { advertisedCommands } from "../input.ts";
 
 /** index -1 means "editing the live draft", 0.. index into history. */
 export type HistState = { index: number; draft: string };
@@ -48,12 +48,14 @@ export function ghostSuggestion(history: readonly string[], current: string): st
 
 export type SlashMatch = { name: string; usage: string; what: string };
 
-/** Popup contents while typing a slash command ("/mo" → /model). */
+/**
+ * Popup contents while typing a slash command ("/mo" → /models). Aliases are
+ * accepted but not offered: the popup is where a command is learned, and it
+ * should teach one spelling.
+ */
 export function slashMatches(current: string): SlashMatch[] {
   if (!current.startsWith("/") || /[\s\n]/.test(current)) return [];
-  return SLASH_COMMANDS.filter((c) => c.name.startsWith(current)).map((c) => ({
-    name: c.name,
-    usage: c.usage,
-    what: c.what,
-  }));
+  return advertisedCommands()
+    .filter((c) => c.name.startsWith(current))
+    .map((c) => ({ name: c.name, usage: c.usage, what: c.what }));
 }

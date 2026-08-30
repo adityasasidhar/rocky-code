@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Config } from "./config/schema.ts";
+import { defaultBaseUrl, type Config } from "./config/schema.ts";
+import { resolveApiKey } from "./config/credentials.ts";
 import { createWorkspaceSnapshot } from "./workspace/snapshot.ts";
 
 export interface DoctorCheck {
@@ -50,6 +51,35 @@ export async function doctor(root: string, config: Config): Promise<DoctorCheck[
     ok: config.trueforge.sandbox,
     detail: config.trueforge.sandbox ? "enabled in the TrueForge agent spec" : "disabled",
     required: config.backend === "trueforge",
+  });
+
+  // The provider only drives the local loop, so a missing key is required-fatal
+  // there and merely worth reporting under TrueForge. Presence only — the value
+  // is never read into the output.
+  const key = resolveApiKey(config.provider, { name: config.activeProvider });
+  const providerLabel = config.activeProvider
+    ? `${config.activeProvider} · ${config.provider.kind}`
+    : config.provider.kind;
+  const endpointLabel =
+    config.provider.baseUrl ?? defaultBaseUrl(config.provider.kind) ?? "sdk default";
+  checks.push({
+    name: "provider",
+    ok: true,
+    detail: `${providerLabel} · ${config.model} · ${endpointLabel}`,
+    required: false,
+  });
+  checks.push({
+    name: "provider credentials",
+    ok: config.provider.kind === "ollama" || key.source !== "none",
+    detail:
+      config.provider.kind === "ollama"
+        ? "no auth required"
+        : key.source === "env"
+          ? `${key.envVar} is set`
+          : key.source === "stored"
+            ? "key stored by /provider add"
+            : `no key — set ${key.envVar ?? "an env var"} or run /provider add`,
+    required: config.backend === "local",
   });
 
   const docker = command(["docker", "version", "--format", "{{.Server.Version}}"], root);

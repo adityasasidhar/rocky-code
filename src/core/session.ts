@@ -38,7 +38,11 @@ function selfIgnore(rockyDir: string): void {
 export class Session {
   readonly id: string;
   readonly config: Config;
-  readonly provider: Provider;
+  /**
+   * Mutable so `/provider use` can switch the live provider without discarding
+   * the conversation. Nothing caches it: every read goes through `session.provider`.
+   */
+  provider: Provider;
   readonly sessionDir: string;
   /** Where `.rocky/` lives. Sub-agent sessions must share it with their parent. */
   readonly projectDir: string;

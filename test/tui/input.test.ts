@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  advertisedCommands,
   completeSlash,
   HISTORY_LIMIT,
   parseHistory,
@@ -12,15 +13,28 @@ import {
 describe("completeSlash", () => {
   test("a partial command completes to its full names", () => {
     const [hits, base] = completeSlash("/p");
-    expect(hits).toEqual(["/permissions", "/plan"]);
+    expect(hits).toEqual(["/permissions", "/plan", "/provider"]);
     expect(base).toBe("/p");
   });
 
   test("a bare slash offers everything", () => {
     const [hits] = completeSlash("/");
-    // Every advertised command completes, plus the /quit alias.
-    expect(hits.length).toBe(SLASH_COMMANDS.length + 1);
+    // Completion reads the whole table, aliases included — one list, so a
+    // command cannot be recognized in one place and unknown in another.
+    expect(hits.length).toBe(SLASH_COMMANDS.length);
     for (const c of SLASH_COMMANDS) expect(hits).toContain(c.name);
+  });
+
+  test("the aliases complete but stay out of the advertised list", () => {
+    const aliases = ["/quit", "/model", "/provider"];
+    for (const alias of aliases) {
+      // Declared in the one table, so recognition and completion see them...
+      expect(SLASH_COMMANDS.map((c) => c.name)).toContain(alias);
+      expect(unknownCommand(alias)).toBeUndefined();
+      // ...and marked hidden, so /help does not.
+      expect(advertisedCommands().map((c) => c.name)).not.toContain(alias);
+    }
+    expect(advertisedCommands().length).toBe(SLASH_COMMANDS.length - aliases.length);
   });
 
   test("prose never completes — Tab must not mangle a sentence", () => {

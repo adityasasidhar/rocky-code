@@ -6,14 +6,14 @@
 import { For, Show, createSignal } from "solid-js";
 import { useKeyboard } from "@opentui/solid";
 import type { Answer } from "../../permissions/engine.ts";
-import type { DialogRequest } from "./store.ts";
+import type { PermissionDialogRequest } from "./store.ts";
 import type { FooterColors } from "./colors.ts";
 
 export const DIALOG_PREVIEW_LINES = 10;
 
 type Option = { key: string; label: string; answer: Answer };
 
-function options(dialog: DialogRequest): Option[] {
+function options(dialog: PermissionDialogRequest): Option[] {
   const request = dialog.request;
   const oneShot: Option[] = [
     { key: "y", label: "yes, once", answer: { kind: "once" } },
@@ -32,7 +32,10 @@ function options(dialog: DialogRequest): Option[] {
   ];
 }
 
-export function PermissionDialog(props: { dialog: DialogRequest; colors: FooterColors }) {
+export function PermissionDialog(props: {
+  dialog: PermissionDialogRequest;
+  colors: FooterColors;
+}) {
   const { colors } = props;
   const [selected, setSelected] = createSignal(0);
   const opts = () => options(props.dialog);

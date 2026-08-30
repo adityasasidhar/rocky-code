@@ -109,6 +109,9 @@ export function parseContextLength(
  *      results by `tool_name`, not by id.
  *   2. Tool arguments arrive as a parsed object, not a JSON string.
  */
+/** Startup probe budget. Long enough for a cold daemon, short enough to notice. */
+const PREPARE_TIMEOUT_MS = 5_000;
+
 export class OllamaProvider implements Provider {
   readonly name = "ollama";
 
@@ -131,7 +134,10 @@ export class OllamaProvider implements Provider {
         method: "POST",
         headers: { "content-type": "application/json", ...this.opts.headers },
         body: JSON.stringify({ model }),
-        ...(signal ? { signal } : {}),
+        // This runs before the first prompt, so an unresponsive daemon would
+        // hang startup with nothing on screen. Bounded even when the caller
+        // passes no signal of its own.
+        signal: signal ?? AbortSignal.timeout(PREPARE_TIMEOUT_MS),
       });
       if (!res.ok) return;
       show = (await res.json()) as ShowResponse;

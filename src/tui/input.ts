@@ -10,6 +10,12 @@ export type SlashCommand = {
   /** How /help shows it, arguments included. */
   usage: string;
   what: string;
+  /**
+   * Accepted everywhere, advertised nowhere. Aliases carry this: they are real
+   * commands for recognition, completion, and highlighting, but /help lists the
+   * name people should learn rather than every spelling that works.
+   */
+  hidden?: boolean;
 };
 
 /**
@@ -28,7 +34,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/plan", usage: "/plan", what: "toggle plan mode: read-only until you approve" },
   { name: "/cost", usage: "/cost", what: "token and cost breakdown" },
   { name: "/compact", usage: "/compact", what: "summarize the conversation now" },
-  { name: "/model", usage: "/model [id]", what: "show or switch the model" },
+  { name: "/connect", usage: "/connect", what: "add a provider from the models.dev catalog" },
+  { name: "/models", usage: "/models", what: "switch model, from every provider you have" },
   { name: "/expand", usage: "/expand <n>", what: "reprint a collapsed tool result in full" },
   { name: "/permissions", usage: "/permissions", what: "show the active mode and rules" },
   { name: "/info", usage: "/info", what: "session info dashboard" },
@@ -36,10 +43,22 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/history", usage: "/history", what: "scroll through this session's output" },
   { name: "/help", usage: "/help", what: "this list" },
   { name: "/exit", usage: "/exit", what: "quit (also /quit or Ctrl-D)" },
+
+  // Aliases. `/model` and `/provider` predate the opencode-shaped `/models` and
+  // `/connect` and still work — muscle memory should not meet "unknown
+  // command". They sit in this table rather than in a second set beside it so
+  // that recognition, completion, and highlighting all keep reading one list;
+  // `hidden` is what keeps them out of /help, not a separate source of truth.
+  { name: "/quit", usage: "/quit", what: "alias for /exit", hidden: true },
+  { name: "/model", usage: "/model <id>", what: "alias for /models", hidden: true },
+  { name: "/provider", usage: "/provider", what: "alias for /connect", hidden: true },
 ];
 
-/** Accepted but not advertised: aliases live here, not in the help table. */
-const KNOWN = new Set([...SLASH_COMMANDS.map((c) => c.name), "/quit"]);
+/** What /help lists: every command except the aliases. */
+export const advertisedCommands = (): SlashCommand[] =>
+  SLASH_COMMANDS.filter((c) => c.hidden !== true);
+
+const KNOWN = new Set(SLASH_COMMANDS.map((c) => c.name));
 
 /**
  * readline completer. Tab on a partial command fills it in; anywhere else the

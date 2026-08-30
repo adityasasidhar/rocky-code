@@ -38,7 +38,12 @@
 
 ## Config & Environment
 
-- **Config precedence** (low→high, `src/config/load.ts:49`): defaults → `~/.config/rocky/config.json` → `.rocky/config.json` → CLI flags. `provider`/`trueforge`/`broker` merge one level deep.
+- **Config precedence** (low→high, `src/config/load.ts:49`): defaults → `~/.config/rocky/config.json` → `.rocky/config.json` → the active named provider → CLI flags. `provider`/`trueforge`/`broker` merge one level deep; `activeProvider` *replaces* `provider` wholesale (a merge would inherit the previous provider's `baseUrl`).
+- **Provider registry**: `providers` (name → provider config + `model` + `catalogId`) plus `activeProvider`, written to `~/.config/rocky/config.json` via `src/config/write.ts` — the only config writer, which refuses to write a literal secret. Registry keys are models.dev provider ids.
+- **models.dev catalog** (`src/config/catalog.ts`): fetched from `https://models.dev/api.json`, cached at `~/.cache/rocky/models.json` (24h TTL, `--refresh` forces). Network → cache → built-in seed; never a hard failure. The `npm` field maps to a Rocky kind (`@ai-sdk/openai-compatible|anthropic|openai`); the other 26 providers are listed but refuse with the SDK name. **Upstream costs are per million tokens — divide by 1e6.**
+- **`/connect` + `/models`** (`src/core/connect_command.ts`) are the picker-driven commands; the typed wizard in `src/config/providers.ts` is the non-TTY / `ROCKY_LEGACY_TUI=1` fallback and must stay. `/provider` and `/model` are unadvertised aliases: in `KNOWN`, not in `SLASH_COMMANDS` (`src/tui/input.ts`).
+- **CLI parity**: `rocky providers list|login|logout` and `rocky models [provider]` in `src/cli_providers.ts`. `models` is scoped to *configured* providers (registered, or credential variable exported) and raises `ProviderNotFound` otherwise — matching `opencode models`.
+- **Stored API keys**: `~/.rocky/credentials.json`, mode 0600 (`src/config/credentials.ts`). Never in a config file, never in history, masked while typed. **Env var named by `apiKeyEnv` always wins over a stored key.**
 - **Example**: `docs/config.example.json` → copy to `.rocky/config.json`.
 - **Session artifacts**: `.rocky/` (gitignored via auto-generated `.rocky/.gitignore` containing `*`). Also holds `broker/` token and archived tool outputs (`session/<id>/outputs/`).
 - **Persisted grants/history**: `~/.rocky/settings.json` (allow/deny grants), `~/.rocky/history` (capped 1000, oldest-first on disk).
@@ -54,6 +59,8 @@
 - **Cache breakpoints**: at most 3, spaced ~12 blocks apart (`src/core/provider/anthropic.ts`). `builtinTools` order is frozen; don't reorder/filter per-request.
 - **Session is mutable** — known tradeoff (see `DESIGN.md` "What I'd do differently").
 - **Slash commands** (`src/tui/input.ts:SLASH_COMMANDS`) are single source for `/help`, Tab completion, and `unknownCommand` guard. Tab completes commands only, never args.
+- **Dialogs**: `DialogRequest` in `src/tui/app/store.ts` is a union of permission / select / prompt; `src/tui/app/pickers.tsx` renders the last two. A masked prompt keeps its value in a plain local, never a signal, so it cannot be rendered by accident. Picker filtering *ranks* matches (prefix > substring > hint > subsequence) — a flat boolean once let "M3" select MiniMax-M2 via the price hint.
+- **The two REPLs duplicate their command tables.** `replFooter` routes every line through `runSlashCommand`; the legacy `repl` answers most commands inline and delegates only a whitelist. A new command needs wiring in both — `/provider` does it by calling one shared handler from each.
 
 ## Testing
 
