@@ -46,13 +46,17 @@ const codex: WorkerAdapter = {
         "exec",
         "--json",
         "--ephemeral",
-        "--sandbox",
-        "workspace-write",
+        // The worker already runs inside Rocky's hardened, disposable Docker
+        // boundary. A second bubblewrap sandbox cannot create namespaces under
+        // no-new-privileges and would prevent all workspace mutations.
+        "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         ...(profile.model ? ["--model", profile.model] : []),
         prompt,
       ],
-      env: { CODEX_HOME: "/tmp/codex" },
+      // The worker root filesystem is read-only, while /tmp is writable and
+      // already exists in every container. Codex creates its state directory.
+      env: { CODEX_HOME: "/tmp" },
     };
   },
   parseLine(line) {

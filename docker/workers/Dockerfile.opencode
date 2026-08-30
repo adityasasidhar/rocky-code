@@ -3,6 +3,8 @@ FROM ${ROCKY_WORKER_BASE}
 
 USER root
 ARG OPENCODE_VERSION
-RUN test -n "${OPENCODE_VERSION}" \
+ENV BUN_INSTALL=/opt/rocky-bun
+RUN mkdir -p "${BUN_INSTALL}" \
+    && test -n "${OPENCODE_VERSION}" \
     && bun add --global "opencode-ai@${OPENCODE_VERSION}"
 USER worker

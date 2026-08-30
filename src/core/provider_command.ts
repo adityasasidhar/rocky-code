@@ -118,7 +118,10 @@ export async function runProviderWizardLine(
     case "done": {
       ctx.wizard.active = null;
       const { draft, secret } = result;
-      const saved = registerProvider(draft, secret, ctx.paths ?? {});
+      const saved = registerProvider(draft, secret, {
+        ...(ctx.paths ?? {}),
+        ...(secret === undefined ? { clearStoredCredential: true } : {}),
+      });
       const entry: NamedProvider = {
         kind: draft.kind,
         reasoningEffort: false,

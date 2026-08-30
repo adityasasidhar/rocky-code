@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseWorkerStream } from "../../src/broker/adapters.ts";
+import { adapterFor, parseWorkerStream } from "../../src/broker/adapters.ts";
 import {
   RecoveryBudget,
   assertRecoveryAllowed,
@@ -16,6 +16,25 @@ describe("worker event adapters", () => {
     );
     expect(events.map((event) => event.type)).toEqual(["completed", "message"]);
     expect(events[1]?.rawType).toBe("plain-text-fallback");
+  });
+
+  test("lets Codex write only through the outer hardened worker boundary", () => {
+    const invocation = adapterFor("codex").invocation(
+      {
+        kind: "codex",
+        image: "worker:1",
+        enabled: true,
+        timeoutMs: 1_000,
+        capabilities: [],
+        costTier: 1,
+        concurrency: 1,
+        credentialEnv: [],
+      },
+      "make a patch",
+    );
+    expect(invocation.command).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(invocation.command).not.toContain("workspace-write");
+    expect(invocation.env).toEqual({ CODEX_HOME: "/tmp" });
   });
 
   test("normalizes Claude and OpenCode tool/result events", () => {

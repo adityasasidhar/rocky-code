@@ -19,6 +19,17 @@ import { rockyHome } from "./write.ts";
 
 export type CredentialStore = Record<string, string>;
 
+/** An existing credential store cannot be safely changed when it is corrupt. */
+export class CredentialStoreError extends Error {
+  constructor(
+    readonly path: string,
+    message: string,
+  ) {
+    super(`${path}: ${message}`);
+    this.name = "CredentialStoreError";
+  }
+}
+
 export const credentialsPath = (): string =>
   join(rockyHome(), ".rocky", "credentials.json");
 
@@ -45,6 +56,40 @@ export function readCredentials(path: string = credentialsPath()): CredentialSto
   }
 }
 
+/**
+ * Mutation must be stricter than lookup. A session can continue without a key
+ * when the store is corrupt, but treating an existing unreadable file as `{}`
+ * and writing it back would erase every credential it held.
+ */
+function readStoreForMutation(path: string): CredentialStore {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw new CredentialStoreError(path, "cannot read existing credential store");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new CredentialStoreError(path, "invalid JSON in existing credential store");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new CredentialStoreError(path, "expected existing credential store to be a JSON object");
+  }
+
+  const store: CredentialStore = {};
+  for (const [name, value] of Object.entries(parsed)) {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new CredentialStoreError(path, `invalid credential value for "${name}"`);
+    }
+    store[name] = value;
+  }
+  return store;
+}
+
 export function readCredential(
   name: string,
   path: string = credentialsPath(),
@@ -67,10 +112,10 @@ export function writeCredential(
   path: string = credentialsPath(),
 ): void {
   withFileLock(path, () => {
-    const store = readCredentials(path);
+    const store = readStoreForMutation(path);
     store[name] = key;
     writeStore(path, store);
-  });
+  }, { dirMode: 0o700 });
 }
 
 /**
@@ -83,7 +128,7 @@ export function writeCredential(
  */
 export function deleteCredential(name: string, path: string = credentialsPath()): boolean {
   return withFileLock(path, () => {
-    const store = readCredentials(path);
+    const store = readStoreForMutation(path);
     if (!(name in store)) return false;
     delete store[name];
     if (Object.keys(store).length === 0) {
@@ -96,7 +141,7 @@ export function deleteCredential(name: string, path: string = credentialsPath())
     }
     writeStore(path, store);
     return true;
-  });
+  }, { dirMode: 0o700 });
 }
 
 export type KeySource = "env" | "stored" | "none";

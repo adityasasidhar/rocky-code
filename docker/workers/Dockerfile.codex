@@ -3,6 +3,11 @@ FROM ${ROCKY_WORKER_BASE}
 
 USER root
 ARG CODEX_VERSION
-RUN test -n "${CODEX_VERSION}" \
+ENV BUN_INSTALL=/opt/rocky-bun
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p "${BUN_INSTALL}" \
+    && test -n "${CODEX_VERSION}" \
     && bun add --global "@openai/codex@${CODEX_VERSION}"
 USER worker

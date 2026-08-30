@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigError, loadConfig } from "../src/config/load.ts";
 import {
@@ -224,6 +224,14 @@ describe("credentials store", () => {
     expect(statSync(path()).mode & 0o777).toBe(0o600);
   });
 
+  test("tightens the credential directory before it creates a lock inside it", () => {
+    const credentialDir = join(dir, "credentials");
+    mkdirSync(credentialDir, { mode: 0o755 });
+    chmodSync(credentialDir, 0o755);
+    writeCredential("groq", "sk-secret", join(credentialDir, "credentials.json"));
+    expect(statSync(credentialDir).mode & 0o777).toBe(0o700);
+  });
+
   test("keeps other providers when one is removed", () => {
     writeCredential("groq", "a", path());
     writeCredential("work", "b", path());
@@ -235,6 +243,14 @@ describe("credentials store", () => {
   test("a corrupt store reads as empty rather than killing the session", () => {
     writeFileSync(path(), "{ not json", "utf8");
     expect(credentialNames(path())).toEqual([]);
+  });
+
+  test("a corrupt store is not overwritten by a credential mutation", () => {
+    writeFileSync(path(), "{ not json", "utf8");
+    expect(() => writeCredential("groq", "sk-secret", path())).toThrow(/invalid JSON/);
+    expect(readFileSync(path(), "utf8")).toBe("{ not json");
+    expect(() => deleteCredential("groq", path())).toThrow(/invalid JSON/);
+    expect(readFileSync(path(), "utf8")).toBe("{ not json");
   });
 
   test("the environment wins over a stored key", () => {
