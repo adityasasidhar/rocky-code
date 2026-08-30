@@ -17,8 +17,7 @@ Rocky hires Codex, Claude Code, and OpenCode as disposable contractors, keeps th
 in sealed containers that have never seen your checkout, and refuses to believe a
 word they say until TrueForge has proved it in a sandbox and you have said yes.
 
-[![CI](https://github.com/adityasasidhar/rocky-code/actions/workflows/ci.yml
-/badge.svg)](https://github.com/adityasasidhar/rocky-code/actions/workflows/ci.yml)
+[![CI](https://github.com/adityasasidhar/rocky-code/actions/workflows/ci.yml/badge.svg)](https://github.com/adityasasidhar/rocky-code/actions/workflows/ci.yml)
 [![tests](https://img.shields.io/badge/tests-961%20passing-2ea043)](#verification)
 [![typecheck](https://img.shields.io/badge/tsc-strict%20%C2%B7%20clean-2ea043)](#verification)
 [![runtime](https://img.shields.io/badge/runtime-Bun%201.4-f472b6)](https://bun.sh)
