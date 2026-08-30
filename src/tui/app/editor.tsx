@@ -8,7 +8,7 @@
  * slash-command popup, and ghost-text suggestions from history (Tab accepts).
  * The decisions live in editor-logic.ts; this file only wires keys to them.
  */
-import { For, Show, createEffect, createSignal, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import type { KeyEvent, TextareaRenderable } from "@opentui/core";
 import type { FooterStore } from "./store.ts";
 import type { FooterColors } from "./colors.ts";
@@ -20,6 +20,7 @@ import {
   slashMatches,
   type HistState,
 } from "./editor-logic.ts";
+import { windowFor } from "./pickers.tsx";
 
 /** Imperative handle the root app uses for Ctrl-C clear / Ctrl-D exit checks. */
 export type EditorApi = {
@@ -34,6 +35,8 @@ const SUBMIT_BINDINGS = [
   { name: "return", shift: true, action: "newline" },
   { name: "j", ctrl: true, action: "newline" },
 ] as const;
+
+const SLASH_VISIBLE_ROWS = 6;
 
 export function PromptEditor(props: {
   store: FooterStore;
@@ -51,7 +54,14 @@ export function PromptEditor(props: {
   const [text, setText] = createSignal("");
   const [selected, setSelected] = createSignal(0);
 
-  const matches = () => slashMatches(text());
+  const matches = createMemo(() => slashMatches(text()));
+  const popupView = createMemo(() =>
+    windowFor(matches().length, selected(), SLASH_VISIBLE_ROWS),
+  );
+  const visibleMatches = createMemo(() => {
+    const view = popupView();
+    return matches().slice(view.start, view.end);
+  });
   const ghost = () => ghostSuggestion(store.history(), text());
 
   const put = (value: string) => {
@@ -68,7 +78,7 @@ export function PromptEditor(props: {
   // Editor rows + border + popup + ghost line, reported as they change.
   createEffect(() => {
     const rows = Math.min(text().split("\n").length, 8) + 2;
-    const popup = Math.min(matches().length, 6);
+    const popup = Math.min(matches().length, SLASH_VISIBLE_ROWS);
     props.onFootprint(rows + popup + (ghost() ? 1 : 0));
   });
 
@@ -147,13 +157,18 @@ export function PromptEditor(props: {
     <box flexDirection="column" width="100%">
       <Show when={matches().length > 0}>
         <box flexDirection="column" paddingLeft={2}>
-          <For each={matches().slice(0, 6)}>
+          <For each={visibleMatches()}>
             {(match, index) => (
               <text wrapMode="none">
                 <span
-                  style={{ fg: index() === selected() ? colors.accent : colors.muted }}
+                  style={{
+                    fg:
+                      popupView().start + index() === selected()
+                        ? colors.accent
+                        : colors.muted,
+                  }}
                 >
-                  {index() === selected() ? "❯ " : "  "}
+                  {popupView().start + index() === selected() ? "❯ " : "  "}
                   {match.usage.padEnd(14)}
                 </span>
                 <span style={{ fg: colors.muted }}>{match.what}</span>

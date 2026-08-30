@@ -206,6 +206,14 @@ describe("streams", () => {
     expect(r.finalText).toBe("# Title\n**bold**");
   });
 
+  test("non-TTY output preserves repeated whitespace across stream chunks", () => {
+    const { r, out } = harness();
+    r.handle({ type: "text_delta", text: "aligned:  " });
+    r.handle({ type: "text_delta", text: "left\t\tright\n" });
+    r.close();
+    expect(out()).toBe("aligned:  left\t\tright\n");
+  });
+
   test("markdown can be forced on, and finalText stays raw", () => {
     const { r, out } = harness({ markdown: true });
     r.handle({ type: "text_delta", text: "# Title\n" });
@@ -243,3 +251,60 @@ describe("streams", () => {
     expect(out()).toContain("denied by rule");
   });
 });
+
+describe("thinking rendering", () => {
+  test("hidden by default — showThinking is opt-in", () => {
+    const { r, out } = harness();
+    r.handle({ type: "thinking_delta", text: "hidden reasoning" });
+    r.close();
+    expect(out()).toBe("");
+  });
+
+  test("shown when showThinking is true, with a labelled header", () => {
+    const { r, out } = harness({ showThinking: true });
+    r.handle({ type: "thinking_delta", text: "weighing it" });
+    r.close();
+    expect(out()).toContain("thinking");
+    expect(out()).toContain("weighing it");
+  });
+
+  test("a long thinking stream wraps with indented continuation lines", () => {
+    // Width is 80 (harness default). Indent is "  ".
+    // Two passes force a wrap somewhere in the second copy.
+    const { r, out } = harness({ showThinking: true });
+    const phrase = "alpha beta gamma delta epsilon zeta eta theta";
+    r.handle({ type: "thinking_delta", text: phrase });
+    r.handle({ type: "thinking_delta", text: " " + phrase });
+    r.close();
+    const text = stripAnsi(out());
+    expect(text).toContain("thinking\n");
+    // A wrap happened, and the wrapped line carries the indent prefix.
+    expect(text).toMatch(/\n {2}\w/);
+    // The first content line under the header is *not* indented — only
+    // continuation lines are.
+    const afterHeader = text.slice(text.indexOf("thinking\n") + "thinking\n".length);
+    const lines = afterHeader.split("\n");
+    expect(lines[0]?.startsWith("  ")).toBe(false);
+  });
+
+  test("a hard newline in the stream resets wrap state cleanly", () => {
+    const { r, out } = harness({ showThinking: true });
+    r.handle({ type: "thinking_delta", text: "first paragraph\nsecond paragraph" });
+    r.close();
+    const text = stripAnsi(out());
+    expect(text).toContain("first paragraph");
+    expect(text).toContain("second paragraph");
+  });
+
+  test("a turn_end flushes any held wrap state", () => {
+    const { r, out } = harness({ showThinking: true });
+    r.handle({ type: "thinking_delta", text: "tail" });
+    r.handle({ type: "turn_end", stopReason: "end_turn", usage: emptyUsage() });
+    expect(stripAnsi(out())).toContain("tail");
+  });
+});
+
+function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;]*m/g, "");
+}

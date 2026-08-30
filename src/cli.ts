@@ -919,7 +919,9 @@ async function replFooter(
           opts.memory,
         );
         renderer.close();
-        console.log(summary(session));
+        // Status bar already carries token totals; an inline summary would
+        // duplicate the same numbers in two places.
+        process.stdout.write("\n");
       } catch (e) {
         renderer.close();
         console.error(red(explain(e).message));
@@ -1262,7 +1264,9 @@ async function repl(
           opts.memory,
         );
         renderer.close();
-        console.log(summary(session));
+        // Status bar already carries token totals; an inline summary would
+        // duplicate the same numbers in two places.
+        process.stdout.write("\n");
         updateStatusBar();
       } catch (e) {
         renderer.close();
@@ -1308,23 +1312,24 @@ function permissionsReport(engine: PermissionEngine): string {
  * The one-line status printed after every turn. Styles itself, part by part —
  * wrapping the whole line in one colour cannot work, because the meter's own
  * reset would cancel it for everything after (that bug shipped once).
+ *
+ * Kept short on purpose: the status bar at the bottom already carries the
+ * context window and the running totals, so this only needs the deltas from
+ * the turn that just ended. Anything longer is noise.
  */
 function summary(session: Session): string {
   const u = session.totalUsage;
-  const pct = Math.round(session.contextUsed * 100);
-  const ctx =
-    session.lastPromptTokens > 0
-      ? `${meter(session.contextUsed)} ${dim(`${pct}% of ${compactNumber(session.contextWindow)}`)}`
-      : `${meter(0)} ${dim("—")}`;
-
-  const parts = [
-    ctx,
-    dim(`${compactNumber(u.inputTokens)} in`),
-    dim(`${compactNumber(u.outputTokens)} out`),
-    dim(`${compactNumber(u.cacheReadInputTokens)} cached`),
-    dim(`$${session.costUsd.toFixed(4)}`),
-  ];
-  return parts.join(dim(" · "));
+  const cost = session.costUsd > 0 ? dim(`· $${session.costUsd.toFixed(4)}`) : "";
+  const cached = u.cacheReadInputTokens > 0
+    ? dim(`· ${compactNumber(u.cacheReadInputTokens)} cached`)
+    : "";
+  return [
+    dim(`${compactNumber(u.inputTokens)} ${green("↑")} ${compactNumber(u.outputTokens)} ${red("↓")}`),
+    cached,
+    cost,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /** `/cost` — the full breakdown, including what caching actually saved. */

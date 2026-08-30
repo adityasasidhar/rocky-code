@@ -106,10 +106,10 @@ describe("buildSystemPrompt", () => {
 
   test("does not leak .rocky into the directory snapshot", () => {
     session(); // creates .rocky
-    const text = buildSystemPrompt(dir)
-      .map((s) => s.text)
-      .join("\n");
-    expect(text).not.toContain(".rocky");
+    // Check the environment segment specifically — the prompt text itself can
+    // legitimately mention `.rocky` paths (e.g. settings.json) as documentation.
+    const env = buildSystemPrompt(dir).at(-1)!.text;
+    expect(env).not.toContain(".rocky");
   });
 
   test("instructions come first and are marked cacheable", () => {

@@ -22,11 +22,14 @@ import { emptyUsage } from "./types.ts";
  *     about survive untouched. Compaction is for what came before.
  */
 
-const RECAP_SYSTEM = `You are compacting a coding agent's conversation so it can continue
-working with a smaller context window. The agent will see ONLY your summary plus its most
-recent turns — everything else is discarded.
+const RECAP_SYSTEM = `<identity>
+You are compacting a coding agent's conversation so it can continue working with a
+smaller context window. The agent will see ONLY your recap plus its most recent
+turns — everything else is discarded.
+</identity>
 
-Write a factual, dense recap under exactly these headings:
+<sections>
+Write a factual, dense recap under exactly these headings, in this order:
 
 ## Task
 What the user asked for, in their terms. Include constraints they stated.
@@ -35,24 +38,25 @@ What the user asked for, in their terms. Include constraints they stated.
 What is done, what is in progress, what is verified vs. merely attempted.
 
 ## Files
-Every file read or modified, with a one-line note on what changed or what it contains.
-Use exact paths.
+Every file read or modified, with a one-line note on what changed or what it
+contains. Use exact paths.
 
 ## Decisions
-Choices made and why, including approaches tried and rejected. The agent must not
-re-litigate these or repeat failed attempts.
+Choices made and why, including approaches tried and rejected. The agent must
+not re-litigate these or repeat failed attempts.
 
 ## Facts
-Specific values the agent will need again: commands that work, test names, error
-messages, function signatures, line numbers.
+Specific values the agent will need again: commands that work, test names,
+error messages, function signatures, line numbers.
 
 ## TODO
 What remains, as an ordered list. Empty if nothing remains.
+</sections>
 
-Rules:
-- Preserve exact identifiers, paths, and commands. Do not paraphrase them.
-- Omit conversational filler entirely. No preamble, no sign-off.
-- If something was never established, do not invent it.`;
+<rules>
+- Preserve exact identifiers, paths, and commands verbatim.
+- No preamble, no sign-off. If something was never established, do not invent it.
+</rules>`;
 
 export type CompactionOptions = {
   /** How many trailing user-turn boundaries to keep verbatim, when there are any. */

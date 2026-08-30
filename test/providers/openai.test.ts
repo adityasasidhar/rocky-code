@@ -113,6 +113,41 @@ describe("OpenAICompatibleProvider — streaming", () => {
     expect(lastEvent(events).message.content).toEqual([{ type: "text", text: "answer" }]);
   });
 
+  test("strips inline <think>…</think> tags out of streamed content", async () => {
+    // MiniMax-M3 and similar OpenAI-compatible reasoning models emit the tags
+    // inside `content` rather than as a separate reasoning field. Without the
+    // filter they leak into the TUI and into `-p` stdout.
+    server = serveChunks([
+      sse(delta({ content: "<think>weighing it</think>" })),
+      sse(delta({ content: "READY" })),
+      sse(delta({}, "stop")),
+      sseDone(),
+    ]);
+
+    const events = await collect(provider(server.url).stream(baseRequest()));
+    expect(thinkingOf(events)).toBe("weighing it");
+    expect(textOf(events)).toBe("READY");
+    // The transcript keeps the full content; stripping is a render concern.
+    expect(lastEvent(events).message.content).toEqual([
+      { type: "text", text: "<think>weighing it</think>READY" },
+    ]);
+  });
+
+  test("reassembles a think tag split across chunk boundaries", async () => {
+    server = serveChunks([
+      sse(delta({ content: "<thi" })),
+      sse(delta({ content: "nk>weigh" })),
+      sse(delta({ content: "ing it</th" })),
+      sse(delta({ content: "ink>READY" })),
+      sse(delta({}, "stop")),
+      sseDone(),
+    ]);
+
+    const events = await collect(provider(server.url).stream(baseRequest()));
+    expect(thinkingOf(events)).toBe("weighing it");
+    expect(textOf(events)).toBe("READY");
+  });
+
   test("subtracts cached tokens so the context meter totals correctly", async () => {
     server = serveChunks([
       sse(delta({ content: "x" }, "stop")),

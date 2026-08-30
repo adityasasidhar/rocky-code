@@ -13,6 +13,7 @@ import {
   postStream,
   ToolCallAccumulator,
 } from "./stream_util.ts";
+import { ThinkTagFilter } from "../think_tag.ts";
 
 // ---------------------------------------------------------------------------
 // Wire types (adapter boundary — the only place these shapes exist)
@@ -145,6 +146,7 @@ export class OpenAICompatibleProvider implements Provider {
 
     const tools = new ToolCallAccumulator();
     const announced = new Set<number>();
+    const thinkFilter = new ThinkTagFilter();
     let text = "";
     let finish: string | null = null;
     let usage: Usage = emptyUsage();
@@ -165,7 +167,12 @@ export class OpenAICompatibleProvider implements Provider {
 
         if (delta.content) {
           text += delta.content;
-          yield { type: "text_delta", text: delta.content };
+          for (const segment of thinkFilter.push(delta.content)) {
+            yield {
+              type: segment.kind === "thinking" ? "thinking_delta" : "text_delta",
+              text: segment.text,
+            };
+          }
         }
 
         for (const call of delta.tool_calls ?? []) {
@@ -204,6 +211,13 @@ export class OpenAICompatibleProvider implements Provider {
     if (req.signal.aborted) {
       yield abortedEnd(text);
       return;
+    }
+
+    for (const segment of thinkFilter.flush()) {
+      yield {
+        type: segment.kind === "thinking" ? "thinking_delta" : "text_delta",
+        text: segment.text,
+      };
     }
 
     const calls = tools.finish();

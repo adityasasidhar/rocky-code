@@ -23,6 +23,74 @@ const indent = (s: string, pad = "    ") =>
     .join("\n");
 
 /**
+ * Wraps streamed text to terminal width, indenting continuation lines.
+ *
+ * Holding back text breaks perceived speed. Instead we hold at most one word
+ * and emit as soon as we know it fits; only when a word would overflow do we
+ * insert a newline + indent first. Stream-friendly: chunks can split words,
+ * the next chunk resumes without re-counting.
+ */
+class LineWrapper {
+  private word = "";
+  private col: number;
+  private startOfLine: boolean;
+
+  constructor(
+    private readonly sink: (s: string) => void,
+    private readonly width: () => number,
+    private readonly indent: string,
+    startCol = 0,
+  ) {
+    this.col = startCol;
+    this.startOfLine = startCol === 0;
+  }
+
+  push(text: string): void {
+    for (const ch of text) {
+      if (ch === "\n") {
+        this.flushWord();
+        this.sink("\n");
+        this.col = 0;
+        this.startOfLine = true;
+      } else if (ch === " " || ch === "\t") {
+        this.flushWord();
+      } else {
+        this.word += ch;
+      }
+    }
+  }
+
+  /** Release the held word, if any. Safe to call at end of stream. */
+  flush(): void {
+    this.flushWord();
+  }
+
+  private flushWord(): void {
+    if (!this.word) return;
+    const w = this.word;
+    this.word = "";
+
+    const limit = Math.max(this.indent.length + 2, this.width());
+
+    if (!this.startOfLine && this.col + 1 + w.length > limit) {
+      this.sink("\n");
+      this.sink(this.indent);
+      this.col = this.indent.length;
+      this.startOfLine = true;
+    }
+
+    if (!this.startOfLine) {
+      this.sink(" ");
+      this.col += 1;
+    }
+
+    this.sink(w);
+    this.col += w.length;
+    this.startOfLine = false;
+  }
+}
+
+/**
  * A tool result hangs off its call the way Claude Code draws it:
  *
  *   ⏺ bash(bun test)
@@ -120,6 +188,7 @@ export class Renderer {
   private readonly spinner: Spinner;
   private atLineStart = true;
   private inThinking = false;
+  private thinkingWrap: LineWrapper | undefined;
   private readonly running = new Map<string, string>();
   /** Collected assistant prose, so -p mode can print just the answer. */
   private readonly answer: string[] = [];
@@ -208,16 +277,24 @@ export class Renderer {
         this.opts.onActivity?.(null);
         if (!this.inThinking) {
           this.newline();
-          this.write(gray("thinking… "));
+          this.write(`${dim("▸")} ${dim("thinking")}\n`);
+          this.thinkingWrap = new LineWrapper(
+            (s) => this.write(gray(s)),
+            () => Math.max(40, (this.out.columns ?? 80) - 4),
+            "  ",
+            0,
+          );
           this.inThinking = true;
         }
-        this.write(gray(event.text));
+        this.thinkingWrap!.push(event.text);
         return;
 
       case "text_delta":
         this.spinner.stop();
         this.opts.onActivity?.(null);
         if (this.inThinking) {
+          this.thinkingWrap?.flush();
+          this.thinkingWrap = undefined;
           this.newline();
           this.inThinking = false;
         }
@@ -322,6 +399,9 @@ export class Renderer {
 
       case "turn_end":
         this.spinner.stop();
+        this.thinkingWrap?.flush();
+        this.thinkingWrap = undefined;
+        this.inThinking = false;
         this.flushMarkdown();
         this.newline();
         if (event.stopReason === "aborted") {
@@ -395,6 +475,8 @@ export class Renderer {
   /** Call before exiting so the cursor is restored even on Ctrl-C. */
   close(): void {
     this.spinner.stop();
+    this.thinkingWrap?.flush();
+    this.thinkingWrap = undefined;
     this.flushMarkdown();
     this.newline();
   }
